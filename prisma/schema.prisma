@@ -1,0 +1,144 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  // у тебя уже используется файл внутри папки prisma:
+  // если в .env есть DATABASE_URL — он приоритетнее.
+  url      = env("DATABASE_URL") // пример: "file:./prisma/dev.db"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?  @unique
+  phone     String?  @unique
+  birthday  DateTime?
+  classroom String?            // Классное руководство (например, "9Б")
+  avatarUrl String?
+  role      String?            // старое поле, оставляем для обратной совместимости
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // RBAC
+  roles UserRole[]
+
+  // Группы (методические/любые)
+  groupMemberships GroupMember[]
+
+  // Назначения задач пользователю
+  assignedTasks TaskAssigneeUser[]
+
+  // NEW: предметы и МО — как массивы строк (SQLite JSON)
+  subjects         Json?        // ["Физика","Химия",...]
+  methodicalGroups Json?        // ["МО естественных наук", ...]
+
+  @@index([name])
+  @@index([phone])
+  @@index([email])
+}
+
+model Role {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique    // "director" | "deputy_plus" | ...
+  power     Int      @default(0) // чем больше, тем выше права
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users UserRole[]
+
+  @@index([power])
+  @@index([slug])
+}
+
+model UserRole {
+  userId String
+  roleId String
+  // кто и когда назначил — на будущее
+  assignedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@index([userId])
+}
+
+model Group {
+  id        String   @id @default(cuid())
+  name      String   @unique   // например, "МО естественных наук"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members GroupMember[]
+
+  // если когда-нибудь захотим задачи на группу:
+  assignedTasks TaskAssigneeGroup[]
+}
+
+model GroupMember {
+  userId String
+  groupId String
+  joinedAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+  @@index([groupId])
+  @@index([userId])
+}
+
+model Task {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  title       String
+  description String?
+  dueDate     DateTime?
+  priority    TaskPriority @default(NORMAL)
+
+  // Назначения
+  assigneesUsers  TaskAssigneeUser[]
+  assigneesGroups TaskAssigneeGroup[]
+
+  @@index([dueDate])
+  @@index([priority])
+}
+
+model TaskAssigneeUser {
+  taskId String
+  userId String
+  assignedAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, userId])
+  @@index([userId])
+  @@index([taskId])
+}
+
+model TaskAssigneeGroup {
+  taskId String
+  groupId String
+  assignedAt DateTime @default(now())
+
+  task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, groupId])
+  @@index([groupId])
+  @@index([taskId])
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+}
