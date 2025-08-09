@@ -1,11 +1,10 @@
-// app/teachers/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
 import Modal from "@/components/Modal";
 import { SUBJECTS_2025_RU, METHODICAL_GROUPS_108, FALLBACK_ROLES } from "@/lib/edu";
 
-type Role = { id: string; name: string; slug: string; power?: number };
+type Role = { id?: string; name: string; slug: string; power?: number };
 type UserRow = {
   id: string;
   name: string;
@@ -35,17 +34,15 @@ export default function TeachersPage() {
   const loadRoles = async () => {
     try {
       const r = await fetch("/api/roles", { cache: "no-store" });
-      if (!r.ok) throw new Error(String(r.status));
-      const data = await r.json();
+      const data = r.ok ? await r.json() : [];
       setRoles(Array.isArray(data) ? data : (data?.items ?? FALLBACK_ROLES as any));
     } catch {
-      setRoles((FALLBACK_ROLES as any).map((x: any, i: number) => ({ id: String(i), name: x.name, slug: x.slug })));
+      setRoles(FALLBACK_ROLES as any);
     }
   };
 
   const loadUsers = async () => {
-    setLoading(true);
-    setErr(null);
+    setLoading(true); setErr(null);
     try {
       const r = await fetch(`/api/users${q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`, { cache: "no-store" });
       if (!r.ok) throw new Error(String(r.status));
@@ -64,23 +61,19 @@ export default function TeachersPage() {
       const r = await fetch("/api/me", { cache: "no-store" });
       if (!r.ok) throw new Error(String(r.status));
       const me = await r.json();
+      if (me?.error === "NO_USER") { setCanEdit(false); return; }
 
-      if (me?.error === "NO_USER") {
-        // dev-фолбэк: нет авторизации → показать кнопку (иначе не протестировать)
-        setCanEdit(true);
-        return;
-      }
       const rolesArr: { name?: string; slug?: string }[] = Array.isArray(me?.roles) ? me.roles : [];
       const roleText: string = (me?.role ?? "") as string;
+
       const bySlug = rolesArr.some(x => x?.slug === "director" || x?.slug === "deputy_plus");
       const byName = rolesArr.some(x => x?.name === "Директор" || x?.name === "Заместитель +");
       const bySingleText = /директор|заместитель\s*\+?/i.test(roleText || "");
       const byRoot = Boolean(me?.isRoot || me?.root);
       const byPower = typeof me?.power === "number" && me.power >= 90;
+
       setCanEdit(bySlug || byName || bySingleText || byRoot || byPower);
-    } catch {
-      setCanEdit(false);
-    }
+    } catch { setCanEdit(false); }
   };
 
   useEffect(() => { loadRoles(); loadMe(); }, []);
@@ -89,7 +82,6 @@ export default function TeachersPage() {
   const onAdded = () => { setShowAdd(false); loadUsers(); };
   const onSaved = () => { setEditId(null); loadUsers(); };
 
-  // стиль тонкой разделительной линии
   const tdBorderTop = { borderTop: "1px solid #e2e8f0" };
 
   return (
@@ -130,20 +122,11 @@ export default function TeachersPage() {
                 <tr key={u.id}>
                   <td style={cellStyle}>
                     <div style={{ textAlign: "left" }}>{u.name}</div>
-                    <div
-                      style={{
-                        textAlign: "center",
-                        fontSize: 12,
-                        marginTop: 4,
-                        color: "#16a34a", // green (online). Для offline: #dc2626
-                      }}
-                    >
-                      online
-                    </div>
+                    <div style={{ textAlign: "center", fontSize: 12, marginTop: 4, color: "#16a34a" }}>online</div>
                   </td>
                   <td style={cellStyle}>{u.email || "—"}</td>
                   <td style={cellStyle}>{u.phone || "—"}</td>
-                  <td style={cellStyle}>{u.role || "—"}</td>
+                  <td style={cellStyle}>{u.role || (Array.isArray(u.roles) && u.roles[0]?.name) || "—"}</td>
                   <td style={cellStyle}>
                     {u.birthday
                       ? new Date(u.birthday).toLocaleDateString("ru-RU", { day: "2-digit", month: "short", year: "numeric" })
@@ -178,7 +161,7 @@ export default function TeachersPage() {
   );
 }
 
-// ===== helpers / form (без изменений логики) =====
+/* ---------- форма ---------- */
 function fmtDateInput(value?: string | null): string {
   if (!value) return "";
   try {
@@ -197,8 +180,8 @@ function CheckboxGroup({
     onChange(value.includes(opt) ? value.filter((x) => x !== opt) : [...value, opt]);
   }
   return (
-    <div className={`grid gap-2`} style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
-      {options.map((opt: string) => (
+    <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+      {options.map((opt) => (
         <label key={opt} className="flex items-center gap-2">
           <input type="checkbox" checked={value.includes(opt)} onChange={() => toggle(opt)} />
           <span>{opt}</span>
@@ -209,10 +192,7 @@ function CheckboxGroup({
 }
 
 function UserForm({ mode, roles, userId, onSuccess }: {
-  mode: "create" | "edit";
-  roles: Role[];
-  userId?: string;
-  onSuccess: () => void;
+  mode: "create" | "edit"; roles: Role[]; userId?: string; onSuccess: () => void;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -242,11 +222,10 @@ function UserForm({ mode, roles, userId, onSuccess }: {
         setClassroom(u.classroom ?? "");
         setSubjects(Array.isArray(u.subjects) ? u.subjects : []);
         setGroups(Array.isArray(u.methodicalGroups) ? u.methodicalGroups : []);
+
         const firstSlug = Array.isArray(u.roles) && u.roles.length ? (u.roles[0]?.slug as string) : "";
         setRoleSlug(firstSlug || "");
-      } catch {
-        setErr("Не удалось загрузить пользователя");
-      }
+      } catch { setErr("Не удалось загрузить пользователя"); }
     })();
     return () => { aborted = true; };
   }, [mode, userId]);
@@ -258,11 +237,7 @@ function UserForm({ mode, roles, userId, onSuccess }: {
   }, [roles, roleSlug]);
 
   const canSubmit =
-    name.trim().length > 0 &&
-    email.trim().length > 0 &&
-    phone.trim().length > 0 &&
-    roleSlug.trim().length > 0 &&
-    birthday.trim().length > 0;
+    name.trim() && email.trim() && phone.trim() && roleSlug.trim() && birthday.trim();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -299,9 +274,7 @@ function UserForm({ mode, roles, userId, onSuccess }: {
       onSuccess();
     } catch (e: any) {
       setErr(e?.message || "Не удалось сохранить");
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   }
 
   return (
@@ -329,13 +302,10 @@ function UserForm({ mode, roles, userId, onSuccess }: {
           <label className="label">Дата рождения</label>
           <input className="input" type="date" required value={birthday} onChange={(e) => setBirthday(e.target.value)} />
         </div>
-
         <div className="form-control">
           <label className="label">Роль</label>
           <select className="select" required value={roleSlug} onChange={(e) => setRoleSlug(e.target.value)}>
-            {roles.map((r: Role) => (
-              <option key={r.slug} value={r.slug}>{r.name}</option>
-            ))}
+            {roles.map((r) => <option key={r.slug} value={r.slug}>{r.name}</option>)}
           </select>
         </div>
       </div>
