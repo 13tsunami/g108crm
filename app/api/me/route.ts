@@ -1,50 +1,59 @@
+// app/api/me/route.ts
 import { NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { FALLBACK_ROLES } from "@/lib/edu";
+import * as RBAC from "@/lib/rbac";
 
-/**
- * Пока нет реальной аутентификации — берём «текущего» пользователя так:
- * - если в .env задан ROOT_USER_IDS — находим по нему (первый попавшийся id),
- * - иначе берём первого пользователя из базы.
- * Отдаём и старое поле role (строка), и нормализованный массив roles.
- */
+function parseArr(s?: string | null): string[] {
+  if (!s) return [];
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+
 export async function GET() {
-  try {
-    const rootIds = (process.env.ROOT_USER_IDS || "")
-      .split(",").map((s) => s.trim()).filter(Boolean);
-
-    let me =
-      (rootIds.length
-        ? await prisma.user.findFirst({ where: { id: { in: rootIds } } })
-        : null) ||
-      (await prisma.user.findFirst({}));
-
-    if (!me) return NextResponse.json({ error: "NO_USER" });
-
-    const byName = new Map(FALLBACK_ROLES.map((r) => [r.name, r]));
-    const bySlug = new Map(FALLBACK_ROLES.map((r) => [r.slug, r]));
-    const primary =
-      byName.get(me.role ?? "") ||
-      bySlug.get(String(me.role ?? "").toLowerCase()) ||
-      FALLBACK_ROLES[FALLBACK_ROLES.length - 1];
-
-    const roles = [{ name: primary.name, slug: primary.slug, power: primary.power }];
-
-    return NextResponse.json({
-      id: me.id,
-      name: me.name,
-      email: me.email,
-      phone: me.phone,
-      birthday: me.birthday,
-      classroom: me.classroom,
-      role: me.role,
-      roles,
-      power: primary.power,
-      isRoot: rootIds.includes(me.id),
-      createdAt: me.createdAt,
-      updatedAt: me.updatedAt,
-    });
-  } catch {
-    return NextResponse.json({ error: "NO_USER" });
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
   }
+
+  const me = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    // выбираем только реально существующие в схеме поля
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      username: true,
+      phone: true,
+      role: true,
+      birthday: true,
+      classroom: true,
+      avatarUrl: true,
+      telegram: true,
+      about: true,
+      notifyEmail: true,
+      notifyTelegram: true,
+      subjects: true,
+      methodicalGroups: true,
+    },
+  });
+  if (!me) return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
+
+  // флаг рута вычисляем в коде, не из БД
+  let isRoot = false;
+  try {
+    if (typeof (RBAC as any)?.isRootUser === "function") {
+      isRoot = !!(RBAC as any).isRootUser(me);
+    } else {
+      isRoot = me.name === "Евжик Иван Сергеевич";
+    }
+  } catch { isRoot = me.name === "Евжик Иван Сергеевич"; }
+
+  const dto = {
+    ...me,
+    subjects: parseArr((me as any).subjects),
+    methodicalGroups: parseArr((me as any).methodicalGroups),
+    isRoot,
+  };
+
+  return NextResponse.json(dto);
 }

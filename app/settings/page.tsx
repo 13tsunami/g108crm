@@ -1,222 +1,248 @@
-// app/settings/page.tsx
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { SUBJECTS_2025_RU, METHODICAL_GROUPS_108 } from "@/lib/edu";
 
-type SettingsState = {
-  city: string;
-  lat: string;
-  lon: string;
-  avatarUrl: string;            // ссылка, которую подхватит сайдбар
-  showSidebarSummary: boolean;
-  compactNav: boolean;
-  theme: "light" | "dark";
-  phone: string;
+type Me = {
+  id: string;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  classroom?: string | null;
+  about?: string | null;
+  avatarUrl?: string | null;
+  telegram?: string | null;
+  notifyEmail?: boolean;
+  notifyTelegram?: boolean;
+  role?: string | null;
+  subjects?: string[];
+  methodicalGroups?: string[];
+  groups?: string[];
 };
 
-const LS_KEY = "crm.settings";
-const DEFAULT_AVATAR = "/avatar.png";
-
-function sanitizeUrl(u: unknown): string {
-  const s = (typeof u === "string" ? u : "").trim();
-  return s ? s : DEFAULT_AVATAR;
-}
-
-function load(): SettingsState {
-  const base: SettingsState = {
-    city: "Екатеринбург",
-    lat: "56.8389",
-    lon: "60.6057",
-    avatarUrl: DEFAULT_AVATAR,
-    showSidebarSummary: false,
-    compactNav: false,
-    theme: "dark",
-    phone: "",
-  };
-
-  if (typeof window === "undefined") return base;
-
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return base;
-    const s = JSON.parse(raw) ?? {};
-    return {
-      city: s.city ?? base.city,
-      lat: s.lat ?? base.lat,
-      lon: s.lon ?? base.lon,
-      avatarUrl: sanitizeUrl(s.avatarUrl),
-      showSidebarSummary: !!s.showSidebarSummary,
-      compactNav: !!s.compactNav,
-      theme: s.theme === "light" ? "light" : "dark",
-      phone: typeof s.phone === "string" ? s.phone : "",
-    };
-  } catch {
-    return base;
+function MultiSelectList({
+  options,
+  value,
+  onChange,
+  columns = 2,
+}: {
+  options: string[];
+  value: string[];
+  onChange: (v: string[]) => void;
+  columns?: 1 | 2 | 3;
+}) {
+  const set = new Set(value);
+  function toggle(opt: string) {
+    const next = new Set(value);
+    if (next.has(opt)) next.delete(opt);
+    else next.add(opt);
+    onChange([...next]);
   }
+  return (
+    <div
+      className="rounded border p-2"
+      style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))`,
+        gap: 8,
+        maxHeight: 240,
+        overflow: "auto",
+      }}
+    >
+      {options.map((opt) => (
+        <label key={opt} className="inline-flex items-center gap-2">
+          <input type="checkbox" checked={set.has(opt)} onChange={() => toggle(opt)} />
+          <span>{opt}</span>
+        </label>
+      ))}
+    </div>
+  );
 }
 
 export default function SettingsPage() {
-  const [state, setState] = useState<SettingsState>(load());
-  const [savedUI, setSavedUI] = useState<null | "ok" | "err">(null);
-  const [uploading, setUploading] = useState(false);
-  const [phoneStatus, setPhoneStatus] = useState<null | "ok" | "err" | "dup" | "unauth">(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
+
+  const [phone, setPhone] = useState("");
+  const [classroom, setClassroom] = useState("");
+  const [about, setAbout] = useState("");
+  const [telegram, setTelegram] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [notifyEmail, setNotifyEmail] = useState(true);
+  const [notifyTelegram, setNotifyTelegram] = useState(false);
+
+  const [subjects, setSubjects] = useState<string[]>([]);
+  const [mGroups, setMGroups] = useState<string[]>([]);
+
+  const [oldPass, setOldPass] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [newPass2, setNewPass2] = useState("");
+  const [pErr, setPErr] = useState<string | null>(null);
+  const [pOk, setPOk] = useState<string | null>(null);
+
+  const [showOld, setShowOld] = useState(false);
+  const [showNew, setShowNew] = useState(false);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = state.theme;
-  }, [state.theme]);
+    (async () => {
+      setLoading(true);
+      try {
+        const r = await fetch("/api/profile", { cache: "no-store" });
+        const j: Me = await r.json();
+        setMe(j);
+        setPhone(j.phone ?? "");
+        setClassroom(j.classroom ?? "");
+        setAbout(j.about ?? "");
+        setTelegram(j.telegram ?? "");
+        setAvatarUrl(j.avatarUrl ?? "");
+        setNotifyEmail(j.notifyEmail ?? true);
+        setNotifyTelegram(j.notifyTelegram ?? false);
+        setSubjects(Array.isArray(j.subjects) ? j.subjects : []);
+        setMGroups(Array.isArray(j.methodicalGroups) ? j.methodicalGroups : (Array.isArray(j.groups) ? j.groups : []));
+      } catch {
+        setErr("Не удалось загрузить профиль");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
-  function persist(next: SettingsState = state) {
+  async function saveProfile() {
+    setErr(null); setOk(null);
     try {
-      const fixed: SettingsState = { ...next, avatarUrl: sanitizeUrl(next.avatarUrl) };
-      localStorage.setItem(LS_KEY, JSON.stringify(fixed));
-      window.dispatchEvent(new StorageEvent("storage", { key: LS_KEY, newValue: JSON.stringify(fixed) }));
-      setSavedUI("ok");
-    } catch {
-      setSavedUI("err");
-    } finally {
-      setTimeout(() => setSavedUI(null), 1500);
-    }
-  }
-
-  async function onUpload() {
-    if (!fileRef.current?.files?.[0]) return;
-    const file = fileRef.current.files[0];
-    setUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
-      if (!res.ok) throw new Error(String(res.status));
-      const data = await res.json();
-      const next = { ...state, avatarUrl: sanitizeUrl(data.url) };
-      setState(next);
-      persist(next);
-    } catch {
-      // оставляем состояние как есть
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  async function savePhone() {
-    setPhoneStatus(null);
-    try {
-      const uid = process.env.NEXT_PUBLIC_USER_ID;
-      const res = await fetch("/api/user/phone", {
+      const r = await fetch("/api/profile", {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-id": uid ? String(uid) : "",
-        },
-        body: JSON.stringify({ phone: state.phone }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: phone || null,
+          classroom: classroom || null,
+          about: about || null,
+          telegram: telegram || null,
+          avatarUrl: avatarUrl || null,
+          notifyEmail,
+          notifyTelegram,
+          subjects,
+          methodicalGroups: mGroups,
+          groups: mGroups, // дубль для совместимости
+        }),
       });
-      if (res.status === 401) return setPhoneStatus("unauth");
-      if (res.status === 409) return setPhoneStatus("dup");
-      if (!res.ok) return setPhoneStatus("err");
-      setPhoneStatus("ok");
-      persist({ ...state });
+      if (!r.ok) throw new Error(String(r.status));
+      setOk("Профиль обновлён");
     } catch {
-      setPhoneStatus("err");
-    } finally {
-      setTimeout(() => setPhoneStatus(null), 1800);
+      setErr("Не удалось сохранить изменения");
     }
   }
+
+  async function changePassword() {
+    setPErr(null); setPOk(null);
+    if (!newPass || newPass !== newPass2) return setPErr("Пароли не совпадают");
+    try {
+      const r = await fetch("/api/profile/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ oldPassword: oldPass, newPassword: newPass }),
+      });
+      if (!r.ok) {
+        const t = await r.json().catch(() => ({}));
+        throw new Error(t?.error || "Ошибка");
+      }
+      setPOk("Пароль изменён");
+      setOldPass(""); setNewPass(""); setNewPass2("");
+    } catch (e: any) { setPErr(e?.message || "Не удалось изменить пароль"); }
+  }
+
+  if (loading) return <div className="p-6">Загрузка…</div>;
+  if (err) return <div className="p-6 text-red-600">{err}</div>;
+  if (!me) return null;
 
   return (
-    <div className="section">
-      <h1>Настройки</h1>
-      <p>Аватар, погода и поведение интерфейса. Телефон сохраняется в базу. Палитра не меняется.</p>
-
-      <div className="card" style={{ padding: 16, marginTop: 14 }}>
-        <h2>Аватар</h2>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input ref={fileRef} type="file" accept="image/*" />
-          <button className="btn-primary" onClick={onUpload} disabled={uploading}>
-            {uploading ? "Загрузка…" : "Загрузить"}
-          </button>
-        </div>
-        <p style={{ marginTop: 8 }}>Файл сохраняется в /public/uploads; ссылку подхватит сайдбар.</p>
-      </div>
-
-      <div className="card" style={{ padding: 16, marginTop: 14 }}>
-        <h2>Локализация и погода</h2>
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr 1fr" }}>
-          <label>
-            Город (подпись)
-            <input value={state.city} onChange={(e) => setState({ ...state, city: e.target.value })} />
-          </label>
-          <label>
-            Широта
-            <input inputMode="decimal" value={state.lat} onChange={(e) => setState({ ...state, lat: e.target.value })} />
-          </label>
-          <label>
-            Долгота
-            <input inputMode="decimal" value={state.lon} onChange={(e) => setState({ ...state, lon: e.target.value })} />
-          </label>
+    <div className="p-4 md:p-6 space-y-8">
+      <div>
+        <h1 className="text-2xl font-semibold mb-2">Настройки профиля</h1>
+        <div className="text-neutral-600">
+          Телефон, кабинет, контакты, предметы/МО, описание и пароль можно менять самостоятельно. ФИО, email и роль — через администратора.
         </div>
       </div>
 
-      <div className="card" style={{ padding: 16, marginTop: 14 }}>
-        <h2>Интерфейс</h2>
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr 1fr" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <input
-              type="checkbox"
-              checked={state.showSidebarSummary}
-              onChange={(e) => setState({ ...state, showSidebarSummary: e.target.checked })}
-            />
-            Сводка задач в сайдбаре
+      <div className="card p-4 space-y-4">
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <label className="label">Телефон</label>
+            <input className="input w-full" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+7XXXXXXXXXX" />
+          </div>
+          <div>
+            <label className="label">Классное руководство / кабинет</label>
+            <input className="input w-full" value={classroom} onChange={(e) => setClassroom(e.target.value)} placeholder="например, 9Б / каб. 203" />
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-4">
+          <div>
+            <label className="label">Telegram</label>
+            <input className="input w-full" value={telegram} onChange={(e) => setTelegram(e.target.value)} placeholder="@username" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="label">Ссылка на фото (аватар)</label>
+            <input className="input w-full" value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://..." />
+          </div>
+        </div>
+
+        <div>
+          <label className="label">О себе</label>
+          <textarea className="input w-full" rows={5} value={about} onChange={(e) => setAbout(e.target.value)} placeholder="Кратко о себе, достижения, расписание приёма…" />
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <label className="label">Предметы</label>
+            <MultiSelectList options={SUBJECTS_2025_RU} value={subjects} onChange={setSubjects} />
+          </div>
+          <div>
+            <label className="label">Методические объединения</label>
+            <MultiSelectList options={METHODICAL_GROUPS_108} value={mGroups} onChange={setMGroups} />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-6">
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={notifyEmail} onChange={(e) => setNotifyEmail(e.target.checked)} />
+            <span>Уведомления на email</span>
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <input
-              type="checkbox"
-              checked={state.compactNav}
-              onChange={(e) => setState({ ...state, compactNav: e.target.checked })}
-            />
-            Компактная навигация
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={notifyTelegram} onChange={(e) => setNotifyTelegram(e.target.checked)} />
+            <span>Уведомления в Telegram</span>
           </label>
-          <label>
-            Тема
-            <select value={state.theme} onChange={(e) => setState({ ...state, theme: e.target.value as "light" | "dark" })}>
-              <option value="dark">Тёмная</option>
-              <option value="light">Светлая</option>
-            </select>
-          </label>
+        </div>
+
+        <div className="flex gap-3">
+          <button className="btn btn-primary" onClick={saveProfile}>Сохранить</button>
+          {ok && <div className="text-green-600 self-center">{ok}</div>}
+          {err && <div className="text-red-600 self-center">{err}</div>}
         </div>
       </div>
 
-      <div className="card" style={{ padding: 16, marginTop: 14 }}>
-        <h2>Номер телефона</h2>
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr auto" }}>
-          <input
-            placeholder="+7XXXXXXXXXX"
-            value={state.phone}
-            onChange={(e) => setState({ ...state, phone: e.target.value.replace(/[^\d+]/g, "") })}
-          />
-          <button className="btn-primary" onClick={savePhone}>Сохранить телефон</button>
+      <div className="card p-4 space-y-4">
+        <h2 className="text-lg font-semibold">Смена пароля</h2>
+        <div className="grid md:grid-cols-3 gap-4">
+          <div className="flex items-center gap-2">
+            <input className="input w-full" type={showOld ? "text" : "password"} placeholder="Текущий пароль" value={oldPass} onChange={(e) => setOldPass(e.target.value)} />
+            <button type="button" className="btn" onClick={() => setShowOld((v) => !v)}>{showOld ? "Скрыть" : "Показать"}</button>
+          </div>
+          <div className="flex items-center gap-2">
+            <input className="input w-full" type={showNew ? "text" : "password"} placeholder="Новый пароль" value={newPass} onChange={(e) => setNewPass(e.target.value)} />
+            <button type="button" className="btn" onClick={() => setShowNew((v) => !v)}>{showNew ? "Скрыть" : "Показать"}</button>
+          </div>
+          <div>
+            <input className="input w-full" type={showNew ? "text" : "password"} placeholder="Повторите новый пароль" value={newPass2} onChange={(e) => setNewPass2(e.target.value)} />
+          </div>
         </div>
-        <div style={{ marginTop: 8 }}>
-          {phoneStatus === "ok" && "Сохранено в базе"}
-          {phoneStatus === "dup" && "Такой телефон уже используется"}
-          {phoneStatus === "unauth" && "Не указан пользователь (x-user-id)"}
-          {phoneStatus === "err" && "Ошибка сохранения"}
+        <div className="flex gap-3">
+          <button className="btn" onClick={changePassword}>Изменить пароль</button>
+          {pOk && <div className="text-green-600 self-center">{pOk}</div>}
+          {pErr && <div className="text-red-600 self-center">{pErr}</div>}
         </div>
-      </div>
-
-      <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
-        <button className="btn-primary" onClick={() => persist()}>Сохранить и применить</button>
-        <button
-          onClick={() => {
-            const def = load();
-            setState(def);
-            persist(def);
-          }}
-        >
-          Сбросить
-        </button>
-        {savedUI === "ok" && <span style={{ marginLeft: 8 }}>Сохранено</span>}
-        {savedUI === "err" && <span style={{ marginLeft: 8 }}>Ошибка сохранения</span>}
       </div>
     </div>
   );

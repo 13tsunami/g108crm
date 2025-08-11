@@ -5,140 +5,157 @@ generator client {
 
 datasource db {
   provider = "sqlite"
-  // у тебя уже используется файл внутри папки prisma:
-  // если в .env есть DATABASE_URL — он приоритетнее.
-  url      = env("DATABASE_URL") // пример: "file:./prisma/dev.db"
+  url      = "file:./dev.db"
 }
 
 model User {
-  id        String   @id @default(cuid())
-  name      String
-  email     String?  @unique
-  phone     String?  @unique
-  birthday  DateTime?
-  classroom String?            // Классное руководство (например, "9Б")
-  avatarUrl String?
-  role      String?            // старое поле, оставляем для обратной совместимости
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String   @id @default(cuid())
+  name           String?
+  email          String?  @unique
+  username       String?  @unique
+  phone          String?  @unique
+  passwordHash   String?
+  emailVerified  DateTime?
+  image          String?
+  birthday       DateTime?
+  classroom      String?
+  role           String?
+  lastSeen       DateTime?
 
-  // RBAC
-  roles UserRole[]
-
-  // Группы (методические/любые)
-  groupMemberships GroupMember[]
-
-  // Назначения задач пользователю
-  assignedTasks TaskAssigneeUser[]
-
-  // NEW: предметы и МО — как массивы строк (SQLite JSON)
-  subjects         Json?        // ["Физика","Химия",...]
-  methodicalGroups Json?        // ["МО естественных наук", ...]
-
-  @@index([name])
-  @@index([phone])
-  @@index([email])
+  accounts       Account[]
+  sessions       Session[]
+  authenticators Authenticator[]            // обратная связь к Authenticator.user
+  messages       Message[]
+  groupMembers   GroupMember[]
+  taskAssignees  TaskAssignee[]
+  tasksCreated   Task[] @relation("UserCreatedTasks") // обратная связь к Task.createdBy
 }
 
-model Role {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique    // "director" | "deputy_plus" | ...
-  power     Int      @default(0) // чем больше, тем выше права
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  users UserRole[]
-
-  @@index([power])
-  @@index([slug])
-}
-
-model UserRole {
-  userId String
-  roleId String
-  // кто и когда назначил — на будущее
-  assignedAt DateTime @default(now())
+model Account {
+  id                 String  @id @default(cuid())
+  userId             String
+  type               String
+  provider           String
+  providerAccountId  String
+  refresh_token      String?
+  access_token       String?
+  expires_at         Int?
+  token_type         String?
+  scope              String?
+  id_token           String?
+  session_state      String?
+  oauth_token_secret String?
+  oauth_token        String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
-  @@id([userId, roleId])
-  @@index([roleId])
-  @@index([userId])
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Authenticator {
+  id                   String  @id @default(cuid())
+  userId               String
+  providerAccountId    String
+  credentialID         String  @unique
+  credentialPublicKey  String
+  counter              Int     @default(0)
+  credentialDeviceType String
+  credentialBackedUp   Boolean
+  transports           String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Task {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  dueDate     DateTime
+  hidden      Boolean  @default(false)
+  priority    String   @default("normal")
+
+  createdById String?
+  createdBy   User?    @relation("UserCreatedTasks", fields: [createdById], references: [id])
+
+  assignees   TaskAssignee[]
+  tags        TaskTag[]
+}
+
+model Tag {
+  id    String @id @default(cuid())
+  name  String @unique
+  tasks TaskTag[]
+}
+
+model TaskTag {
+  id     String @id @default(cuid())
+  taskId String
+  tagId  String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, tagId])
+}
+
+model Thread {
+  id       String   @id @default(cuid())
+  title    String
+  messages Message[]
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  text      String
+  authorId  String
+  threadId  String
+
+  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 }
 
 model Group {
-  id        String   @id @default(cuid())
-  name      String   @unique   // например, "МО естественных наук"
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
+  id      String @id @default(cuid())
+  name    String
   members GroupMember[]
-
-  // если когда-нибудь захотим задачи на группу:
-  assignedTasks TaskAssigneeGroup[]
 }
 
 model GroupMember {
-  userId String
+  id      String @id @default(cuid())
+  userId  String
   groupId String
-  joinedAt DateTime @default(now())
 
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
-  @@id([userId, groupId])
-  @@index([groupId])
-  @@index([userId])
+  @@unique([userId, groupId])
 }
 
-model Task {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  title       String
-  description String?
-  dueDate     DateTime?
-  priority    TaskPriority @default(NORMAL)
-
-  // Назначения
-  assigneesUsers  TaskAssigneeUser[]
-  assigneesGroups TaskAssigneeGroup[]
-
-  @@index([dueDate])
-  @@index([priority])
-}
-
-model TaskAssigneeUser {
+model TaskAssignee {
+  id     String @id @default(cuid())
   taskId String
   userId String
-  assignedAt DateTime @default(now())
 
   task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@id([taskId, userId])
-  @@index([userId])
-  @@index([taskId])
-}
-
-model TaskAssigneeGroup {
-  taskId String
-  groupId String
-  assignedAt DateTime @default(now())
-
-  task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
-
-  @@id([taskId, groupId])
-  @@index([groupId])
-  @@index([taskId])
-}
-
-enum TaskPriority {
-  LOW
-  NORMAL
-  HIGH
+  @@unique([taskId, userId])
 }

@@ -1,18 +1,14 @@
 // app/api/roles/route.ts
 import { NextResponse } from "next/server";
-import prisma from "@/lib/prisma";
-
-const db = prisma as any;
 
 export async function GET() {
-  try {
-    const roles = await db.role.findMany({
-      select: { id: true, name: true, slug: true, power: true },
-      orderBy: [{ power: "desc" }, { name: "asc" }],
-    });
-    return NextResponse.json(roles);
-  } catch (e) {
-    console.error("GET /api/roles failed:", e);
-    return NextResponse.json({ error: "SERVER_ERROR" }, { status: 500 });
-  }
+  // статический список ролей (как и в фронте)
+  const roles = [
+    { slug: "director",     name: "Директор",      power: 5 },
+    { slug: "deputy_plus",  name: "Заместитель +", power: 4 },
+    { slug: "deputy",       name: "Заместитель",   power: 3 },
+    { slug: "teacher_plus", name: "Педагог +",     power: 2 },
+    { slug: "teacher",      name: "Педагог",       power: 1 },
+  ];
+  return NextResponse.json(roles);
 }
