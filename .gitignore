@@ -1,14 +1,22 @@
+# Node/Next
 node_modules/
 .next/
-.out/
+out/
 dist/
-build/
-.turbo/
-.vercel/
 coverage/
-*.log
+
+# Env/секреты
 .env
-.env.local
-.env.*.local
+.env.*
+*.local
+
+# Prisma/SQLite (не пушим локальную БД)
 prisma/dev.db
-prisma/backups/*
+dev.db
+*.sqlite
+*.sqlite-journal
+
+# кэш/IDE
+.vscode/
+.DS_Store
+Thumbs.db
