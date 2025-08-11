@@ -1,49 +1,30 @@
-// app/api/chat/threads/[id]/messages/route.ts  — ПОЛНЫЙ ФАЙЛ
-import { NextRequest, NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
-import { publishMessage } from "@/lib/chatSSE";
+// app/api/chat/sse/[id]/route.ts  (без изменений по сути, привожу целиком)
+import { NextRequest } from "next/server";
+import { subscribe } from "@/lib/chatSSE";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const prisma = new PrismaClient();
-
-export async function GET(_: NextRequest, ctx: { params: { id: string } }) {
+export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
   const { id } = ctx.params;
-  const items = await prisma.message.findMany({
-    where: { threadId: id },
-    orderBy: { createdAt: "asc" },
-    include: { author: { select: { id: true, name: true } } }
-  });
-  const data = items.map(m => ({
-    id: m.id,
-    text: m.text,
-    createdAt: m.createdAt.toISOString(),
-    author: { id: m.author?.id ?? "", name: m.author?.name ?? null }
-  }));
-  return NextResponse.json(data);
-}
 
-export async function POST(req: NextRequest, ctx: { params: { id: string } }) {
-  const meId = "me-dev"; // позже заменишь на id пользователя из сессии
-  const { id } = ctx.params;
-  const { text } = await req.json() as { text?: string };
+  const stream = new ReadableStream({
+    start(controller) {
+      const unsubscribe = subscribe(id, controller);
+      controller.enqueue(new TextEncoder().encode(`event: open\ndata: ${JSON.stringify({ ok: true })}\n\n`));
+      const ping = setInterval(() => { controller.enqueue(new TextEncoder().encode(`: ping\n\n`)); }, 25000);
 
-  if (!text || !text.trim()) {
-    return NextResponse.json({ error: "text is required" }, { status: 400 });
-  }
-
-  const created = await prisma.message.create({
-    data: { text: text.trim(), authorId: meId, threadId: id }
+      const abort = () => { clearInterval(ping); unsubscribe(); try { controller.close(); } catch {} };
+      req.signal.addEventListener("abort", abort);
+    }
   });
 
-  const me = await prisma.user.findUnique({ where: { id: meId }, select: { name: true } });
-  publishMessage(id, {
-    id: created.id,
-    text: created.text,
-    createdAt: created.createdAt.toISOString(),
-    author: { id: meId, name: me?.name ?? null }
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    }
   });
-
-  return NextResponse.json({ ok: true }, { status: 201 });
 }

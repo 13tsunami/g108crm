@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,26 +9,19 @@ datasource db {
 }
 
 model User {
-  id               String         @id @default(cuid())
-  name             String
-  username         String?        @unique
-  email            String?        @unique
-  phone            String?        @unique
-  birthday         DateTime?
-  classroom        String?
-  role             String?
-  avatarUrl        String?
-  telegram         String?
-  about            String?
-  notifyEmail      Boolean        @default(true)
-  notifyTelegram   Boolean        @default(false)
-  subjects         String?
-  methodicalGroups String?
-  passwordHash     String?
-  lastSeen         DateTime?
-  groups           GroupMember[]
-  messages         Message[]      @relation("MessageAuthor")
-  tasks            TaskAssignee[]
+  id        String         @id @default(cuid())
+  name      String
+  phone     String?        @unique
+  birthday  DateTime?
+  classroom String?
+  role      String?
+  lastSeen  DateTime?
+  groups    GroupMember[]
+  tasks     TaskAssignee[]
+  messages  Message[]      @relation("MessageAuthor")
+
+  // ОБРАТНОЕ поле к ChatRead.user
+  chatReads ChatRead[]
 }
 
 model Group {
@@ -40,8 +34,8 @@ model GroupMember {
   id      String @id @default(cuid())
   userId  String
   groupId String
-  group   Group  @relation(fields: [groupId], references: [id])
   user    User   @relation(fields: [userId], references: [id])
+  group   Group  @relation(fields: [groupId], references: [id])
 }
 
 model Task {
@@ -50,7 +44,7 @@ model Task {
   description String
   dueDate     DateTime
   hidden      Boolean        @default(false)
-  priority    String         @default("normal")
+  priority    String         @default("normal") // normal | high
   assignees   TaskAssignee[]
   tags        TaskTag[]
 }
@@ -59,8 +53,8 @@ model TaskAssignee {
   id     String @id @default(cuid())
   taskId String
   userId String
-  user   User   @relation(fields: [userId], references: [id])
   task   Task   @relation(fields: [taskId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
 }
 
 model Tag {
@@ -73,14 +67,19 @@ model TaskTag {
   id     String @id @default(cuid())
   taskId String
   tagId  String
-  tag    Tag    @relation(fields: [tagId], references: [id])
   task   Task   @relation(fields: [taskId], references: [id])
+  tag    Tag    @relation(fields: [tagId], references: [id])
 }
 
 model Thread {
   id       String    @id @default(cuid())
   title    String
   messages Message[]
+
+  // ОБРАТНОЕ поле к ChatRead.thread
+  chatReads ChatRead[]
+
+  @@index([title])
 }
 
 model Message {
@@ -89,15 +88,21 @@ model Message {
   text      String
   authorId  String
   threadId  String
-  thread    Thread   @relation(fields: [threadId], references: [id])
   author    User     @relation("MessageAuthor", fields: [authorId], references: [id])
+  thread    Thread   @relation(fields: [threadId], references: [id])
+
+  @@index([threadId, createdAt])
 }
 
+// ЕДИНСТВЕННАЯ версия ChatRead — со связями и индексами
 model ChatRead {
   id         String   @id @default(cuid())
   threadId   String
   userId     String
   lastReadAt DateTime @default(now())
+
+  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([threadId, userId])
   @@index([userId])

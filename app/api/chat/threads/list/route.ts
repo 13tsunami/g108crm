@@ -1,25 +1,25 @@
 // app/api/chat/threads/list/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { getMe, parsePeer } from "../../_utils";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const prisma = new PrismaClient();
 
-function parsePeer(title: string, meId: string): string | null {
-  const m = /^direct:(.+):(.+)$/.exec(title);
-  if (!m) return null;
-  const [a, b] = [m[1], m[2]];
-  return a === meId ? b : b === meId ? a : null;
-}
+export async function GET(req: NextRequest) {
+  const me = await getMe(prisma, req);
+  if (!me) return NextResponse.json([], { status: 401 });
 
-export async function GET() {
-  const meId = "me-dev";
-
-  // Берём треды формата direct:* с последним сообщением
+  // ограничим сразу на уровне БД
   const rows = await prisma.thread.findMany({
-    where: { title: { startsWith: "direct:" } },
+    where: {
+      OR: [
+        { title: { startsWith: `direct:${me.id}:` } },
+        { title: { endsWith: `:${me.id}` } },
+      ],
+    },
     include: {
       messages: {
         orderBy: { createdAt: "desc" },
@@ -29,36 +29,42 @@ export async function GET() {
     }
   });
 
-  // Оставляем только треды, где участвует текущий пользователь
-  const withMe = rows
-    .map(t => {
-      const peerId = parsePeer(t.title, meId);
-      if (!peerId) return null;
-      return { t, peerId };
-    })
-    .filter(Boolean) as Array<{ t: typeof rows[number]; peerId: string }>;
+  const items = await Promise.all(rows.map(async t => {
+    const peerId = parsePeer(t.title, me.id)!;
+    const peer = await prisma.user.findUnique({ where: { id: peerId }, select: { name: true } });
 
-  // Подтягиваем имена собеседников одним запросом
-  const users = await prisma.user.findMany({
-    where: { id: { in: withMe.map(x => x.peerId) } },
-    select: { id: true, name: true }
-  });
-  const nameById = new Map(users.map(u => [u.id, u.name]));
+    const myRead = await prisma.chatRead.findUnique({
+      where: { threadId_userId: { threadId: t.id, userId: me.id } },
+      select: { lastReadAt: true }
+    });
+    const myReadAt = myRead?.lastReadAt ?? new Date(0);
 
-  const data = withMe
-    .map(({ t, peerId }) => ({
-      id: t.id,
-      peerId,
-      peerName: nameById.get(peerId) ?? null,
-      lastMessageText: t.messages[0]?.text ?? null,
-      lastMessageAt: t.messages[0]?.createdAt?.toISOString?.() ?? null
-    }))
-    // Сортируем по дате последнего сообщения на стороне JS
-    .sort((a, b) => {
-      const ax = a.lastMessageAt ? Date.parse(a.lastMessageAt) : 0;
-      const bx = b.lastMessageAt ? Date.parse(b.lastMessageAt) : 0;
-      return bx - ax;
+    const peerRead = await prisma.chatRead.findUnique({
+      where: { threadId_userId: { threadId: t.id, userId: peerId } },
+      select: { lastReadAt: true }
     });
 
-  return NextResponse.json(data);
+    const unreadCount = await prisma.message.count({
+      where: { threadId: t.id, createdAt: { gt: myReadAt }, NOT: { authorId: me.id } }
+    });
+
+    return {
+      id: t.id,
+      peerId,
+      peerName: peer?.name ?? null,
+      lastMessageText: t.messages[0]?.text ?? null,
+      lastMessageAt: t.messages[0]?.createdAt?.toISOString?.() ?? null,
+      unreadCount,
+      peerReadAt: peerRead?.lastReadAt?.toISOString?.() ?? null
+    };
+  }));
+
+  // сортировка по последнему сообщению
+  items.sort((a, b) => {
+    const ax = a.lastMessageAt ? Date.parse(a.lastMessageAt) : 0;
+    const bx = b.lastMessageAt ? Date.parse(b.lastMessageAt) : 0;
+    return bx - ax;
+  });
+
+  return NextResponse.json(items);
 }
