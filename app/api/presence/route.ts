@@ -1,8 +1,9 @@
 // app/api/presence/route.ts
 import { prisma } from "@/lib/prisma";
+
 export const runtime = "nodejs";
 type J = Record<string, unknown>;
-const json = (d: J, i?: ResponseInit) => Response.json(d, i);
+const json = (data: J, init?: ResponseInit) => Response.json(data, init);
 
 async function hasCol(col: string) {
   const rows = await prisma.$queryRawUnsafe<{ name: string }[]>("PRAGMA table_info('User');");
@@ -35,8 +36,7 @@ export async function POST(req: Request) {
 
 export async function GET(req: Request) {
   try {
-    const url = new URL(req.url);
-    const id = url.searchParams.get("id") || "";
+    const id = new URL(req.url).searchParams.get("id") || "";
     if (!id) return json({ error: "id обязателен" }, { status: 400 });
 
     let lastSeen: string | null = null;

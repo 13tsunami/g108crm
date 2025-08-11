@@ -1,4 +1,3 @@
-// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,98 +8,42 @@ datasource db {
 }
 
 model User {
-  id             String   @id @default(cuid())
-  name           String?
-  email          String?  @unique
-  username       String?  @unique
-  phone          String?  @unique
-  passwordHash   String?
-  emailVerified  DateTime?
-  image          String?
-  birthday       DateTime?
-  classroom      String?
-  role           String?
-  lastSeen       DateTime?
-
-  accounts       Account[]
-  sessions       Session[]
-  authenticators Authenticator[]            // обратная связь к Authenticator.user
-  messages       Message[]
-  groupMembers   GroupMember[]
-  taskAssignees  TaskAssignee[]
-  tasksCreated   Task[] @relation("UserCreatedTasks") // обратная связь к Task.createdBy
-}
-
-model Account {
-  id                 String  @id @default(cuid())
-  userId             String
-  type               String
-  provider           String
-  providerAccountId  String
-  refresh_token      String?
-  access_token       String?
-  expires_at         Int?
-  token_type         String?
-  scope              String?
-  id_token           String?
-  session_state      String?
-  oauth_token_secret String?
-  oauth_token        String?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
-}
-
-model Session {
-  id           String   @id @default(cuid())
-  sessionToken String   @unique
-  userId       String
-  expires      DateTime
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model VerificationToken {
-  identifier String
-  token      String
-  expires    DateTime
-
-  @@unique([identifier, token])
-}
-
-model Authenticator {
-  id                   String  @id @default(cuid())
-  userId               String
-  providerAccountId    String
-  credentialID         String  @unique
-  credentialPublicKey  String
-  counter              Int     @default(0)
-  credentialDeviceType String
-  credentialBackedUp   Boolean
-  transports           String?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String         @id @default(cuid())
+  name             String
+  username         String?        @unique
+  email            String?        @unique
+  phone            String?        @unique
+  birthday         DateTime?
+  classroom        String?
+  role             String?
+  avatarUrl        String?
+  telegram         String?
+  about            String?
+  notifyEmail      Boolean        @default(true)
+  notifyTelegram   Boolean        @default(false)
+  subjects         String?
+  methodicalGroups String?
+  passwordHash     String?
+  lastSeen         DateTime?
+  groupMembers     GroupMember[]
+  messages         Message[]
+  taskAssignees    TaskAssignee[]
 }
 
 model Task {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   title       String
   description String
   dueDate     DateTime
-  hidden      Boolean  @default(false)
-  priority    String   @default("normal")
-
-  createdById String?
-  createdBy   User?    @relation("UserCreatedTasks", fields: [createdById], references: [id])
-
+  hidden      Boolean        @default(false)
+  priority    String         @default("normal")
   assignees   TaskAssignee[]
   tags        TaskTag[]
 }
 
 model Tag {
-  id    String @id @default(cuid())
-  name  String @unique
+  id    String    @id @default(cuid())
+  name  String    @unique
   tasks TaskTag[]
 }
 
@@ -108,15 +51,12 @@ model TaskTag {
   id     String @id @default(cuid())
   taskId String
   tagId  String
-
-  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
-
-  @@unique([taskId, tagId])
+  tag    Tag    @relation(fields: [tagId], references: [id])
+  task   Task   @relation(fields: [taskId], references: [id])
 }
 
 model Thread {
-  id       String   @id @default(cuid())
+  id       String    @id @default(cuid())
   title    String
   messages Message[]
 }
@@ -127,13 +67,12 @@ model Message {
   text      String
   authorId  String
   threadId  String
-
-  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  thread    Thread   @relation(fields: [threadId], references: [id])
+  author    User     @relation(fields: [authorId], references: [id])
 }
 
 model Group {
-  id      String @id @default(cuid())
+  id      String        @id @default(cuid())
   name    String
   members GroupMember[]
 }
@@ -142,20 +81,14 @@ model GroupMember {
   id      String @id @default(cuid())
   userId  String
   groupId String
-
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, groupId])
+  group   Group  @relation(fields: [groupId], references: [id])
+  user    User   @relation(fields: [userId], references: [id])
 }
 
 model TaskAssignee {
   id     String @id @default(cuid())
   taskId String
   userId String
-
-  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([taskId, userId])
+  user   User   @relation(fields: [userId], references: [id])
+  task   Task   @relation(fields: [taskId], references: [id])
 }

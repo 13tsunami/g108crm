@@ -55,11 +55,13 @@ export default function UserForm({
   initialValues,
   onSuccess,
   allowRoleChange = true,
+  forbid = [],
 }: {
-  mode?: "create" | "edit";
+  mode?: "create" | "edit" | "self";
   initialValues?: Partial<UserDTO>;
   onSuccess?: () => void;
   allowRoleChange?: boolean;
+  forbid?: Array<"role" | "classroom" | "password">;
 }) {
   const [roles, setRoles] = useState<RoleDTO[]>([]);
   const [name, setName] = useState(initialValues?.name ?? "");
@@ -77,7 +79,6 @@ export default function UserForm({
   const [birthday, setBirthday] = useState<string>(() => {
     const b = initialValues?.birthday;
     if (!b) return "";
-    // поддержка ISO/Date: приводим к YYYY-MM-DD
     try { return new Date(b).toISOString().slice(0,10); } catch { return ""; }
   });
 
@@ -85,6 +86,10 @@ export default function UserForm({
   const [loading, setLoading] = useState(false);
   const [password, setPassword] = useState(mode === "create" ? "test-password" : "");
   const [showPass, setShowPass] = useState(mode === "create");
+
+  const disableRole = forbid.includes("role") || !allowRoleChange || mode === "self";
+  const disableClassroom = forbid.includes("classroom") || mode === "self";
+  const hidePassword = forbid.includes("password") || mode === "self";
 
   useEffect(() => {
     let aborted = false;
@@ -122,7 +127,7 @@ export default function UserForm({
     setNotifyTelegram(initialValues.notifyTelegram ?? false);
     const b = initialValues.birthday;
     setBirthday(b ? new Date(b).toISOString().slice(0,10) : "");
-    if (mode === "edit") { setPassword(""); setShowPass(false); }
+    if (mode !== "create") { setPassword(""); setShowPass(false); }
   }, [JSON.stringify(initialValues), mode]);
 
   useEffect(() => {
@@ -135,9 +140,17 @@ export default function UserForm({
     if (min) setRoleSlug(min.slug);
   }, [roles, roleSlug]);
 
-  const canSubmit = useMemo(() => !!name.trim() && !!roleSlug && !loading, [name, roleSlug, loading]);
+  const canSubmit = useMemo(() => !!name.trim() && (!!roleSlug || disableRole) && !loading, [name, roleSlug, loading, disableRole]);
 
   async function save(payload: any, id?: string) {
+    if (mode === "self") {
+      return fetch(`/api/profile`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+
     if (id) {
       let res = await fetch(`/api/users/${id}`, {
         method: "PATCH",
@@ -169,10 +182,10 @@ export default function UserForm({
       const payload: any = {
         name: name.trim(),
         email: email.trim() || undefined,
-        phone: phone.trim() || undefined,
-        roleSlug,
-        role: roleSlug,
-        classroom: classroom || undefined,
+        phone: phone.trim() || null,
+        roleSlug: disableRole ? undefined : roleSlug,
+        role: disableRole ? undefined : roleSlug,
+        classroom: disableClassroom ? undefined : (classroom || null),
         subjects,
         methodicalGroups: groups,
         groups,
@@ -184,10 +197,12 @@ export default function UserForm({
         birthday: birthday ? new Date(birthday).toISOString() : null,
       };
 
-      if (mode === "create") {
-        payload.password = password || "test-password";
-      } else if (password.trim() && initialValues?.id) {
-        payload.password = password.trim();
+      if (!hidePassword) {
+        if (mode === "create") {
+          payload.password = password || "test-password";
+        } else if (password.trim() && initialValues?.id) {
+          payload.password = password.trim();
+        }
       }
 
       const res = await save(payload, initialValues?.id);
@@ -219,16 +234,7 @@ export default function UserForm({
       </div>
 
       <div>
-        <label className="block mb-1">Email (необязательно)</label>
-        <input
-          type="email"
-          autoComplete="off" autoCorrect="off" spellCheck={false} autoCapitalize="none" name="offEmail" inputMode="email"
-          value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ivanov@pochta.ru"
-        />
-      </div>
-
-      <div>
-        <label className="block mb-1">Телефон (необязательно)</label>
+        <label className="block mb-1">Телефон</label>
         <input value={phone} onChange={(e) => setPhone(e.target.value.replace(/[^\d+]/g, ""))} placeholder="+7XXXXXXXXXX" />
       </div>
 
@@ -237,30 +243,37 @@ export default function UserForm({
         <input type="date" value={birthday} onChange={(e) => setBirthday(e.target.value)} />
       </div>
 
-      <div>
-        <label className="block mb-1">Роль*</label>
-        <select value={roleSlug} onChange={(e) => setRoleSlug(e.target.value)} disabled={!allowRoleChange}>
-          <option value="">— выберите роль —</option>
-          {roles.map((r) => (<option key={r.id} value={r.slug}>{r.name}</option>))}
-        </select>
-      </div>
-
-      <div>
-        <label className="block mb-1">
-          Пароль {mode === "edit" && <span className="text-xs opacity-70">(оставьте пустым, чтобы не менять)</span>}
-        </label>
-        <div className="flex items-center gap-2">
-          <input type={showPass ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)}
-                 placeholder={mode === "create" ? "test-password" : "Новый пароль"} style={{ flex: 1 }} />
-          <button type="button" className="btn" onClick={() => setShowPass((v) => !v)}>{showPass ? "Скрыть" : "Показать"}</button>
+      {!disableRole && (
+        <div>
+          <label className="block mb-1">Роль*</label>
+          <select value={roleSlug} onChange={(e) => setRoleSlug(e.target.value)}>
+            <option value="">— выберите роль —</option>
+            {roles.map((r) => (<option key={r.id} value={r.slug}>{r.name}</option>))}
+          </select>
         </div>
-      </div>
+      )}
 
-      <div>
-        <label className="block mb-1">Классное руководство (например, 9Б)</label>
-        <input value={classroom} onChange={(e) => setClassroom(e.target.value)} placeholder="9Б" />
-      </div>
+      {!hidePassword && (
+        <div>
+          <label className="block mb-1">
+            Пароль {mode === "edit" && <span className="text-xs opacity-70">(оставьте пустым, чтобы не менять)</span>}
+          </label>
+          <div className="flex items-center gap-2">
+            <input type={showPass ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)}
+                   placeholder={mode === "create" ? "test-password" : "Новый пароль"} style={{ flex: 1 }} />
+            <button type="button" className="btn" onClick={() => setShowPass((v) => !v)}>{showPass ? "Скрыть" : "Показать"}</button>
+          </div>
+        </div>
+      )}
 
+      {!disableClassroom && (
+        <div>
+          <label className="block mb-1">Классное руководство (например, 9Б)</label>
+          <input value={classroom} onChange={(e) => setClassroom(e.target.value)} placeholder="9Б" />
+        </div>
+      )}
+
+      {/* Ниже — факультативные поля; оставлены для визуального единообразия, даже если сейчас не уходят в БД */}
       <div>
         <label className="block mb-1">Предметы</label>
         <MultiSelectList options={SUBJECTS_2025_RU} value={subjects} onChange={setSubjects} columns={2} />
@@ -298,7 +311,7 @@ export default function UserForm({
       </div>
 
       <button type="submit" className="btn-primary" disabled={!canSubmit}>
-        {loading ? "Сохранение…" : mode === "edit" ? "Сохранить" : "Добавить"}
+        {loading ? "Сохранение…" : mode === "edit" ? "Сохранить" : mode === "self" ? "Обновить профиль" : "Добавить"}
       </button>
     </form>
   );

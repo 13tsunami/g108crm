@@ -1,54 +1,53 @@
-import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+// app/api/profile/password/route.ts
 import { prisma } from "@/lib/prisma";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/auth.config";
+import { compare, hash } from "bcryptjs";
 
-function parseArr(s?: string | null): string[] { if (!s) return []; try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } }
-function strArr(a: any): string { return JSON.stringify(Array.isArray(a) ? a : []); }
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
-  const me = await prisma.user.findUnique({ where: { id: session.user.id } });
-  if (!me) return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
-  const u = me as any;
-  return NextResponse.json({
-    ...me,
-    subjects: parseArr(u.subjects),
-    methodicalGroups: parseArr(u.methodicalGroups),
+function json(data: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(data), {
+    status: init.status ?? 200,
+    headers: { "content-type": "application/json; charset=utf-8" },
   });
 }
 
-export async function PATCH(req: Request) {
-  const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
-
-  let body: any; try { body = await req.json(); } catch { return NextResponse.json({ error: "BAD_JSON" }, { status: 400 }); }
-
-  const data: any = {};
-  if ("phone" in body) data.phone = body.phone || null;
-  if ("classroom" in body) data.classroom = body.classroom || null;
-  if ("telegram" in body) data.telegram = body.telegram || null;
-  if ("avatarUrl" in body) data.avatarUrl = body.avatarUrl || null;
-  if ("about" in body) data.about = body.about || null;
-  if ("notifyEmail" in body) data.notifyEmail = !!body.notifyEmail;
-  if ("notifyTelegram" in body) data.notifyTelegram = !!body.notifyTelegram;
-  if ("birthday" in body) data.birthday = body.birthday ? new Date(body.birthday) : null;
-
-  if ("subjects" in body) data.subjects = strArr(body.subjects);
-  if ("methodicalGroups" in body || "groups" in body) data.methodicalGroups = strArr(body.methodicalGroups ?? body.groups);
-
-  delete body.name; delete body.email; delete body.role; delete body.username;
-
+export async function POST(req: Request) {
   try {
-    const updated = await prisma.user.update({ where: { id: session.user.id }, data: data as any });
-    const u = updated as any;
-    return NextResponse.json({
-      ...updated,
-      subjects: parseArr(u.subjects),
-      methodicalGroups: parseArr(u.methodicalGroups),
+    const session = await getServerSession(authOptions);
+    const uid = (session?.user as any)?.id as string | undefined;
+    if (!uid) return json({ error: "Не авторизован" }, { status: 401 });
+
+    const body = await req.json().catch(() => ({}));
+    const currentPassword: string | undefined = body?.currentPassword;
+    const newPassword: string | undefined = body?.newPassword;
+
+    if (!currentPassword || !newPassword) {
+      return json({ error: "Требуются текущий и новый пароль" }, { status: 400 });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: uid },
+      select: { passwordHash: true },
     });
+    if (!user?.passwordHash) {
+      return json({ error: "У пользователя не задан пароль" }, { status: 400 });
+    }
+
+    const ok = await compare(currentPassword, user.passwordHash);
+    if (!ok) return json({ error: "Неверный текущий пароль" }, { status: 400 });
+
+    const newHash = await hash(newPassword, 10);
+    await prisma.user.update({
+      where: { id: uid },
+      data: { passwordHash: newHash },
+    });
+
+    return json({ ok: true });
   } catch (e: any) {
-    if (e?.code === "P2002") return NextResponse.json({ error: "UNIQUE_CONSTRAINT" }, { status: 409 });
-    return NextResponse.json({ error: "SERVER_ERROR" }, { status: 500 });
+    console.error("[/api/profile/password] error:", e);
+    return json({ error: e?.message ?? "Internal error" }, { status: 500 });
   }
 }

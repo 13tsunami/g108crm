@@ -1,78 +1,74 @@
-// app/api/users/[id]/route.ts
-import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import bcrypt from "bcryptjs";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/auth.config";
+import { hash } from "bcryptjs";
+import { parseStrArray, toDbStrArray } from "@/lib/serialize";
 
-function parseArr(s?: string | null): string[] {
-  if (!s) return [];
-  try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
-}
-function strArr(a: any): string {
-  return JSON.stringify(Array.isArray(a) ? a : []);
-}
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-const SELECT = {
-  id: true, name: true, email: true, phone: true, classroom: true, role: true,
-  subjects: true, methodicalGroups: true, avatarUrl: true, telegram: true, about: true,
-  notifyEmail: true, notifyTelegram: true,
-} as const;
+const json = (d: unknown, i: ResponseInit = {}) =>
+  new Response(JSON.stringify(d), { status: i.status ?? 200, headers: { "content-type": "application/json; charset=utf-8" } });
+
+function toDateOrNull(v: unknown): Date | null {
+  if (!v) return null;
+  const s = String(v);
+  const d = new Date(s.length === 10 ? `${s}T00:00:00` : s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function canManage(s: any) {
+  const r = s?.user?.role as string | undefined;
+  return r === "director" || r === "deputy_plus";
+}
 
 export async function GET(_: Request, { params }: { params: { id: string } }) {
-  const u = await prisma.user.findUnique({ where: { id: params.id }, select: SELECT });
-  if (!u) return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
-  return NextResponse.json({
+  const u = await (prisma as any).user.findUnique({ where: { id: params.id } }) as any;
+  if (!u) return json({ error: "Не найдено" }, { status: 404 });
+  return json({
     ...u,
-    subjects: parseArr(u.subjects),
-    methodicalGroups: parseArr(u.methodicalGroups),
+    birthday: u.birthday ? new Date(u.birthday).toISOString() : null,
+    subjects: parseStrArray(u.subjects),
+    methodicalGroups: parseStrArray(u.methodicalGroups),
   });
 }
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
-  const body = await req.json();
-  const {
-    name, email, phone, roleSlug, role, classroom,
-    subjects, methodicalGroups, groups,
-    telegram, avatarUrl, about,
-    notifyEmail, notifyTelegram,
-    password,
-  } = body || {};
+  const session = await getServerSession(authOptions);
+  if (!canManage(session)) return json({ error: "Недостаточно прав" }, { status: 403 });
 
+  const b = await req.json().catch(() => ({} as any));
   const data: any = {};
-  if (name !== undefined) data.name = name;
-  if (email !== undefined) data.email = email || null;
-  if (phone !== undefined) data.phone = phone || null;
-  if (classroom !== undefined) data.classroom = classroom || null;
-  if (roleSlug !== undefined || role !== undefined) data.role = (roleSlug ?? role) || null;
-  if (subjects !== undefined) data.subjects = strArr(subjects);
-  if (methodicalGroups !== undefined || groups !== undefined) data.methodicalGroups = strArr(methodicalGroups ?? groups);
-  if (telegram !== undefined) data.telegram = telegram || null;
-  if (avatarUrl !== undefined) data.avatarUrl = avatarUrl || null;
-  if (about !== undefined) data.about = about || null;
-  if (notifyEmail !== undefined) data.notifyEmail = !!notifyEmail;
-  if (notifyTelegram !== undefined) data.notifyTelegram = !!notifyTelegram;
+  if (typeof b?.name === "string") data.name = b.name.trim();
+  if (typeof b?.phone === "string" || b?.phone === null) data.phone = b.phone || null;
+  if (typeof b?.classroom === "string" || b?.classroom === null) data.classroom = b.classroom || null;
+  if (typeof b?.roleSlug === "string" || typeof b?.role === "string") data.role = (b?.roleSlug as string) ?? (b?.role as string);
+  if (b?.birthday !== undefined) data.birthday = toDateOrNull(b.birthday);
+  if (b?.subjects !== undefined) data.subjects = toDbStrArray(b.subjects);
+  if (b?.methodicalGroups !== undefined) data.methodicalGroups = toDbStrArray(b.methodicalGroups);
+  if (typeof b?.about === "string" || b?.about === null) data.about = b.about ?? null;
+  if (typeof b?.telegram === "string" || b?.telegram === null) data.telegram = b.telegram ?? null;
+  if (typeof b?.avatarUrl === "string" || b?.avatarUrl === null) data.avatarUrl = b.avatarUrl ?? null;
+  if (typeof b?.notifyEmail === "boolean") data.notifyEmail = b.notifyEmail;
+  if (typeof b?.notifyTelegram === "boolean") data.notifyTelegram = b.notifyTelegram;
+  if (typeof b?.password === "string" && b.password.trim()) data.passwordHash = await hash(b.password.trim(), 10);
 
-  if (password) {
-    data.passwordHash = await bcrypt.hash(String(password), 10);
-  }
+  const updated = await (prisma as any).user.update({ where: { id: params.id }, data }) as any;
 
-  try {
-    const updated = await prisma.user.update({ where: { id: params.id }, data, select: SELECT });
-    return NextResponse.json({
-      ...updated,
-      subjects: parseArr(updated.subjects),
-      methodicalGroups: parseArr(updated.methodicalGroups),
-    });
-  } catch (e: any) {
-    if (e?.code === "P2002") return NextResponse.json({ error: "UNIQUE_CONSTRAINT" }, { status: 409 });
-    return NextResponse.json({ error: "SERVER_ERROR" }, { status: 500 });
-  }
+  return json({
+    ...updated,
+    birthday: updated.birthday ? new Date(updated.birthday).toISOString() : null,
+    subjects: parseStrArray(updated.subjects),
+    methodicalGroups: parseStrArray(updated.methodicalGroups),
+  });
+}
+
+export async function PUT(req: Request, ctx: { params: { id: string } }) {
+  return PATCH(req, ctx);
 }
 
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
-  try {
-    await prisma.user.delete({ where: { id: params.id } });
-    return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ error: "SERVER_ERROR" }, { status: 500 });
-  }
+  const session = await getServerSession(authOptions);
+  if (!canManage(session)) return json({ error: "Недостаточно прав" }, { status: 403 });
+  await (prisma as any).user.delete({ where: { id: params.id } });
+  return json({ ok: true });
 }

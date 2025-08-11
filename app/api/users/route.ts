@@ -1,88 +1,76 @@
-// app/api/users/route.ts
 import { prisma } from "@/lib/prisma";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/auth.config";
+import { hash } from "bcryptjs";
+import { parseStrArray, toDbStrArray } from "@/lib/serialize";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type J = Record<string, unknown>;
-const json = (data: J, init: ResponseInit = { status: 200 }) =>
-  new Response(JSON.stringify(data), {
-    ...init,
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
+const json = (d: unknown, i: ResponseInit = {}) =>
+  new Response(JSON.stringify(d), { status: i.status ?? 200, headers: { "content-type": "application/json; charset=utf-8" } });
 
-export async function GET(req: Request) {
-  try {
-    const url = new URL(req.url);
-    const q = (url.searchParams.get("q") || "").trim();
+function toDateOrNull(v: unknown): Date | null {
+  if (!v) return null;
+  const s = String(v);
+  const d = new Date(s.length === 10 ? `${s}T00:00:00` : s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function canManage(s: any) {
+  const r = s?.user?.role as string | undefined;
+  return r === "director" || r === "deputy_plus";
+}
 
-    const where = q
-      ? {
-          OR: [
-            { name: { contains: q } },
-            { username: { contains: q } },
-            { email: { contains: q } },
-            { phone: { contains: q } },
-            { classroom: { contains: q } },
-            { role: { contains: q } },
-          ],
-        }
-      : {};
-
-    const users = await prisma.user.findMany({
-      where,
-      orderBy: [{ name: "asc" }, { username: "asc" }],
-      select: {
-        id: true,
-        name: true,
-        username: true,
-        email: true,
-        phone: true,
-        birthday: true,
-        classroom: true,
-        role: true,
-      },
-    });
-
-    return json({ users, count: users.length });
-  } catch (e: any) {
-    console.error("[/api/users][GET] error:", e);
-    return json({ error: e?.message ?? "Internal error", users: [], count: 0 }, { status: 500 });
-  }
+export async function GET() {
+  const rows = await (prisma as any).user.findMany({ orderBy: { name: "asc" } }) as any[];
+  return json(rows.map(u => ({
+    id: u.id,
+    name: u.name ?? null,
+    phone: u.phone ?? null,
+    classroom: u.classroom ?? null,
+    role: u.role ?? "teacher",
+    roleSlug: u.role ?? "teacher",
+    birthday: u.birthday ? new Date(u.birthday).toISOString() : null,
+    subjects: parseStrArray(u.subjects),
+    methodicalGroups: parseStrArray(u.methodicalGroups),
+    about: u.about ?? null,
+    telegram: u.telegram ?? null,
+    avatarUrl: u.avatarUrl ?? null,
+    notifyEmail: !!u.notifyEmail,
+    notifyTelegram: !!u.notifyTelegram,
+  })));
 }
 
 export async function POST(req: Request) {
-  try {
-    const body = await req.json().catch(() => ({} as any));
-    const data = {
-      name: body?.name?.toString().trim() || null,
-      username: body?.username?.toString().trim() || null,
-      email: body?.email?.toString().trim().toLowerCase() || null,
-      phone: body?.phone?.toString().trim() || null,
-      birthday: body?.birthday ? new Date(body.birthday) : null,
-      classroom: body?.classroom?.toString().trim() || null,
-      role: body?.role?.toString().trim() || null,
-    };
+  const session = await getServerSession(authOptions);
+  if (!canManage(session)) return json({ error: "Недостаточно прав" }, { status: 403 });
 
-    const user = await prisma.user.create({
-      data,
-      select: {
-        id: true,
-        name: true,
-        username: true,
-        email: true,
-        phone: true,
-        birthday: true,
-        classroom: true,
-        role: true,
-      },
-    });
+  const b = await req.json().catch(() => ({} as any));
+  const password = String(b?.password ?? "").trim();
 
-    return json({ ok: true, user }, { status: 201 });
-  } catch (e: any) {
-    // P2002 — нарушение уникальности
-    const status = e?.code === "P2002" ? 409 : 500;
-    console.error("[/api/users][POST] error:", e);
-    return json({ ok: false, error: e?.message ?? "Internal error" }, { status });
-  }
+  const data: any = {
+    name: String(b?.name ?? "").trim(),
+    role: typeof b?.roleSlug === "string" ? b.roleSlug : b?.role ?? "teacher",
+    phone: b?.phone || null,
+    classroom: b?.classroom || null,
+    birthday: toDateOrNull(b?.birthday),
+    subjects: toDbStrArray(b?.subjects),
+    methodicalGroups: toDbStrArray(b?.methodicalGroups),
+    about: typeof b?.about === "string" ? b.about : null,
+    telegram: typeof b?.telegram === "string" ? b.telegram : null,
+    avatarUrl: typeof b?.avatarUrl === "string" ? b.avatarUrl : null,
+    notifyEmail: Boolean(b?.notifyEmail),
+    notifyTelegram: Boolean(b?.notifyTelegram),
+    passwordHash: password ? await hash(password, 10) : null,
+  };
+  if (!data.name) return json({ error: "Имя обязательно" }, { status: 400 });
+
+  const created = await (prisma as any).user.create({ data }) as any;
+
+  return json({
+    ...created,
+    birthday: created.birthday ? new Date(created.birthday).toISOString() : null,
+    subjects: parseStrArray(created.subjects),
+    methodicalGroups: parseStrArray(created.methodicalGroups),
+  });
 }
