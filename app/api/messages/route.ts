@@ -1,26 +1,27 @@
 // app/api/messages/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { NextResponse } from "next/server";
+import { PrismaClient } from "@prisma/client";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const prisma = new PrismaClient();
 
 export async function GET() {
-  const threads = await prisma.thread.findMany({
-    include: { messages: { include: { author: true }, orderBy: { createdAt: "desc" } } },
+  // Последние 50 сообщений глобально
+  const rows = await prisma.message.findMany({
     orderBy: { createdAt: "desc" },
-  });
-  return NextResponse.json(threads);
-}
-
-export async function POST(req: NextRequest) {
-  const { threadTitle, text, authorId } = await req.json();
-  if (!text) return NextResponse.json({ error: "text required" }, { status: 400 });
-
-  let thread = await prisma.thread.findFirst({ where: { title: threadTitle ?? null } });
-  if (!thread) thread = await prisma.thread.create({ data: { title: threadTitle ?? null } });
-
-  const msg = await prisma.message.create({
-    data: { text, authorId: authorId ?? null, threadId: thread.id },
-    include: { author: true, thread: true },
+    take: 50,
+    include: { author: { select: { id: true, name: true } } }
   });
 
-  return NextResponse.json(msg, { status: 201 });
+  const data = rows.map(m => ({
+    id: m.id,
+    text: m.text,
+    createdAt: m.createdAt.toISOString(),
+    author: { id: m.author?.id ?? "", name: m.author?.name ?? null },
+    threadId: m.threadId
+  }));
+
+  return NextResponse.json(data);
 }
