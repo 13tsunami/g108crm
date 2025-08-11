@@ -7,10 +7,11 @@ import { safeJson } from "@/lib/http";
 type MeDTO = {
   id: string;
   name: string | null;
+  email: string | null;         // <-- EMAIL
   phone: string | null;
   classroom: string | null;
   role: string | null;
-  birthday: string | null; // ISO
+  birthday: string | null;
   telegram?: string | null;
   avatarUrl?: string | null;
   about?: string | null;
@@ -30,10 +31,7 @@ export default function SettingsPage() {
     setErr(null);
     try {
       const res = await fetch("/api/profile", { cache: "no-store" });
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        throw new Error(`/api/profile ${res.status}: ${t || "ошибка ответа"}`);
-      }
+      if (!res.ok) throw new Error(`/api/profile ${res.status}`);
       const data = await safeJson<MeDTO>(res);
       setMe(data);
     } catch (e: any) {
@@ -44,16 +42,13 @@ export default function SettingsPage() {
     }
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
   return (
     <div className="section">
       <h2 className="text-xl font-semibold mb-3">Настройки профиля</h2>
 
       {loading && <div>Загрузка…</div>}
-
       {!loading && err && (
         <div className="rounded border border-red-300 bg-red-50 text-red-800 p-3 mb-3">
           Не удалось загрузить профиль. {err}
@@ -63,7 +58,7 @@ export default function SettingsPage() {
       {!loading && me && (
         <>
           <div className="mb-3 text-sm text-neutral-600">
-            Поля «Роль» и «Классное руководство» меняются руководством в разделе «Педагоги». Сменить пароль можно отдельной кнопкой ниже.
+            Поля «Роль» и «Классное руководство» меняются руководством в разделе «Педагоги». Сменить пароль — на отдельной странице.
           </div>
 
           <UserForm
@@ -71,6 +66,7 @@ export default function SettingsPage() {
             initialValues={{
               id: me.id,
               name: me.name ?? "",
+              email: me.email ?? "",         // <-- EMAIL
               phone: me.phone ?? "",
               classroom: me.classroom ?? "",
               roleSlug: me.role ?? undefined,
@@ -83,7 +79,7 @@ export default function SettingsPage() {
               subjects: me.subjects ?? [],
               methodicalGroups: me.methodicalGroups ?? [],
             }}
-            forbid={["role", "classroom", "password"]}
+            forbid={["role", "classroom", "password"]}  // e-mail не запрещаем
             allowRoleChange={false}
             onSuccess={load}
           />

@@ -8,7 +8,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const json = (d: unknown, i: ResponseInit = {}) =>
-  new Response(JSON.stringify(d), { status: i.status ?? 200, headers: { "content-type": "application/json; charset=utf-8" } });
+  new Response(JSON.stringify(d), {
+    status: i.status ?? 200,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 
 function toDateOrNull(v: unknown): Date | null {
   if (!v) return null;
@@ -20,30 +23,42 @@ function canManage(s: any) {
   const r = s?.user?.role as string | undefined;
   return r === "director" || r === "deputy_plus";
 }
+function normEmail(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  // простая валидация
+  return /\S+@\S+\.\S+/.test(s) ? s : s; // позволяем любой корректный вид, сервер не падает
+}
 
 export async function GET() {
-  const rows = await (prisma as any).user.findMany({ orderBy: { name: "asc" } }) as any[];
-  return json(rows.map(u => ({
-    id: u.id,
-    name: u.name ?? null,
-    phone: u.phone ?? null,
-    classroom: u.classroom ?? null,
-    role: u.role ?? "teacher",
-    roleSlug: u.role ?? "teacher",
-    birthday: u.birthday ? new Date(u.birthday).toISOString() : null,
-    subjects: parseStrArray(u.subjects),
-    methodicalGroups: parseStrArray(u.methodicalGroups),
-    about: u.about ?? null,
-    telegram: u.telegram ?? null,
-    avatarUrl: u.avatarUrl ?? null,
-    notifyEmail: !!u.notifyEmail,
-    notifyTelegram: !!u.notifyTelegram,
-  })));
+  const rows = (await (prisma as any).user.findMany({
+    orderBy: { name: "asc" },
+  })) as any[];
+  return json(
+    rows.map((u) => ({
+      id: u.id,
+      name: u.name ?? null,
+      email: u.email ?? null, // <-- EMAIL
+      phone: u.phone ?? null,
+      classroom: u.classroom ?? null,
+      role: u.role ?? "teacher",
+      roleSlug: u.role ?? "teacher",
+      birthday: u.birthday ? new Date(u.birthday).toISOString() : null,
+      subjects: parseStrArray(u.subjects),
+      methodicalGroups: parseStrArray(u.methodicalGroups),
+      about: u.about ?? null,
+      telegram: u.telegram ?? null,
+      avatarUrl: u.avatarUrl ?? null,
+      notifyEmail: !!u.notifyEmail,
+      notifyTelegram: !!u.notifyTelegram,
+    }))
+  );
 }
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!canManage(session)) return json({ error: "Недостаточно прав" }, { status: 403 });
+  if (!canManage(session))
+    return json({ error: "Недостаточно прав" }, { status: 403 });
 
   const b = await req.json().catch(() => ({} as any));
   const password = String(b?.password ?? "").trim();
@@ -51,6 +66,7 @@ export async function POST(req: Request) {
   const data: any = {
     name: String(b?.name ?? "").trim(),
     role: typeof b?.roleSlug === "string" ? b.roleSlug : b?.role ?? "teacher",
+    email: normEmail(b?.email), // <-- EMAIL
     phone: b?.phone || null,
     classroom: b?.classroom || null,
     birthday: toDateOrNull(b?.birthday),
@@ -65,12 +81,18 @@ export async function POST(req: Request) {
   };
   if (!data.name) return json({ error: "Имя обязательно" }, { status: 400 });
 
-  const created = await (prisma as any).user.create({ data }) as any;
+  const created = (await (prisma as any).user.create({ data })) as any;
 
   return json({
     ...created,
-    birthday: created.birthday ? new Date(created.birthday).toISOString() : null,
+    birthday: created.birthday
+      ? new Date(created.birthday).toISOString()
+      : null,
     subjects: parseStrArray(created.subjects),
     methodicalGroups: parseStrArray(created.methodicalGroups),
   });
+}
+
+export async function PUT(req: Request) {
+  return POST(req);
 }

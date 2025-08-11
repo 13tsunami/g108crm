@@ -7,13 +7,21 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const json = (d: unknown, i: ResponseInit = {}) =>
-  new Response(JSON.stringify(d), { status: i.status ?? 200, headers: { "content-type": "application/json; charset=utf-8" } });
+  new Response(JSON.stringify(d), {
+    status: i.status ?? 200,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 
 function toDateOrNull(v: unknown): Date | null {
   if (!v) return null;
   const s = String(v);
   const d = new Date(s.length === 10 ? `${s}T00:00:00` : s);
   return isNaN(d.getTime()) ? null : d;
+}
+function normEmail(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  return /\S+@\S+\.\S+/.test(s) ? s : s;
 }
 
 export async function GET() {
@@ -28,6 +36,7 @@ export async function GET() {
     return json({
       id: u.id,
       name: u.name ?? null,
+      email: u.email ?? null, // <-- EMAIL
       phone: u.phone ?? null,
       classroom: u.classroom ?? null,
       role: u.role ?? null,
@@ -41,7 +50,7 @@ export async function GET() {
       methodicalGroups: parseStrArray(u.methodicalGroups),
     });
   } catch (e: any) {
-    return json({ error: e?.message || "Internal error", stack: e?.stack }, { status: 500 });
+    return json({ error: e?.message || "Internal error" }, { status: 500 });
   }
 }
 
@@ -54,6 +63,7 @@ export async function PATCH(req: Request) {
     const b = await req.json().catch(() => ({} as any));
     const data: any = {};
     if (typeof b?.name === "string") data.name = b.name.trim();
+    if (b?.email !== undefined) data.email = normEmail(b.email); // <-- EMAIL
     if (typeof b?.phone === "string" || b?.phone === null) data.phone = b.phone || null;
     if (b?.birthday !== undefined) data.birthday = toDateOrNull(b.birthday);
     if (b?.subjects !== undefined) data.subjects = toDbStrArray(b.subjects);
@@ -69,6 +79,7 @@ export async function PATCH(req: Request) {
     return json({
       id: u.id,
       name: u.name ?? null,
+      email: u.email ?? null, // <-- EMAIL
       phone: u.phone ?? null,
       classroom: u.classroom ?? null,
       role: u.role ?? null,
@@ -82,6 +93,6 @@ export async function PATCH(req: Request) {
       methodicalGroups: parseStrArray(u.methodicalGroups),
     });
   } catch (e: any) {
-    return json({ error: e?.message || "Internal error", stack: e?.stack }, { status: 500 });
+    return json({ error: e?.message || "Internal error" }, { status: 500 });
   }
 }

@@ -1,318 +1,300 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { SUBJECTS_2025_RU, METHODICAL_GROUPS_108 } from "@/lib/edu";
+import React, { useMemo, useState } from "react";
 
-type RoleDTO = { id: string; name: string; slug: string; power?: number };
-type UserDTO = {
-  id?: string;
-  name: string;
-  email?: string | null;
-  phone?: string | null;
-  roleSlug?: string;
-  roles?: { slug: string; name: string }[];
-  classroom?: string | null;
-  subjects?: string[];
-  methodicalGroups?: string[];
-  telegram?: string | null;
-  avatarUrl?: string | null;
-  about?: string | null;
-  notifyEmail?: boolean;
-  notifyTelegram?: boolean;
-  birthday?: string | null; // ISO "YYYY-MM-DD"
+type Props = {
+  mode: "self" | "create" | "edit";
+  initialValues: {
+    id?: string;
+    name: string;
+    email?: string;           // <-- EMAIL
+    phone?: string;
+    classroom?: string;
+    roleSlug?: string;
+    birthday?: string | null; // ISO
+    telegram?: string;
+    avatarUrl?: string;
+    about?: string;
+    notifyEmail?: boolean;
+    notifyTelegram?: boolean;
+    subjects?: string[];
+    methodicalGroups?: string[];
+    password?: string;
+  };
+  forbid?: ("role" | "classroom" | "password" | "email")[]; // <-- EMAIL forbid
+  allowRoleChange?: boolean;
+  onSuccess?: () => void;
 };
 
-const FALLBACK_ROLES: RoleDTO[] = [
-  { id: "r1", slug: "director",     name: "Директор",      power: 5 },
-  { id: "r2", slug: "deputy_plus",  name: "Заместитель +", power: 4 },
-  { id: "r3", slug: "deputy",       name: "Заместитель",   power: 3 },
-  { id: "r4", slug: "teacher_plus", name: "Педагог +",     power: 2 },
-  { id: "r5", slug: "teacher",      name: "Педагог",       power: 1 },
+const ROLES = [
+  { value: "director", label: "Директор" },
+  { value: "deputy_plus", label: "Заместитель +" },
+  { value: "deputy", label: "Заместитель" },
+  { value: "teacher_plus", label: "Педагог +" },
+  { value: "teacher", label: "Педагог" },
 ];
 
-function MultiSelectList({ options, value, onChange, columns = 2 }:{
-  options: string[]; value: string[]; onChange: (v: string[]) => void; columns?: 1|2|3;
-}) {
-  const set = new Set(value);
-  return (
-    <div className="rounded border p-2 grid gap-2" style={{ gridTemplateColumns: `repeat(${columns},1fr)`, maxHeight: 240, overflow: "auto" }}>
-      {options.map((opt) => (
-        <label key={opt} className="inline-flex items-center gap-2">
-          <input type="checkbox" checked={set.has(opt)} onChange={() => {
-            const next = new Set(value);
-            next.has(opt) ? next.delete(opt) : next.add(opt);
-            onChange([...next]);
-          }} />
-          <span>{opt}</span>
-        </label>
-      ))}
-    </div>
-  );
+function isValidEmail(s: string) {
+  if (!s) return true; // поле не обязательно
+  return /\S+@\S+\.\S+/.test(s);
 }
 
 export default function UserForm({
-  mode = "create",
+  mode,
   initialValues,
-  onSuccess,
-  allowRoleChange = true,
   forbid = [],
-}: {
-  mode?: "create" | "edit" | "self";
-  initialValues?: Partial<UserDTO>;
-  onSuccess?: () => void;
-  allowRoleChange?: boolean;
-  forbid?: Array<"role" | "classroom" | "password">;
-}) {
-  const [roles, setRoles] = useState<RoleDTO[]>([]);
-  const [name, setName] = useState(initialValues?.name ?? "");
-  const [email, setEmail] = useState(initialValues?.email ?? "");
-  const [phone, setPhone] = useState(initialValues?.phone ?? "");
-  const [roleSlug, setRoleSlug] = useState(initialValues?.roleSlug ?? "");
-  const [classroom, setClassroom] = useState(initialValues?.classroom ?? "");
-  const [subjects, setSubjects] = useState<string[]>(initialValues?.subjects ?? []);
-  const [groups, setGroups] = useState<string[]>(initialValues?.methodicalGroups ?? []);
-  const [telegram, setTelegram] = useState(initialValues?.telegram ?? "");
-  const [avatarUrl, setAvatarUrl] = useState(initialValues?.avatarUrl ?? "");
-  const [about, setAbout] = useState(initialValues?.about ?? "");
-  const [notifyEmail, setNotifyEmail] = useState<boolean>(initialValues?.notifyEmail ?? true);
-  const [notifyTelegram, setNotifyTelegram] = useState<boolean>(initialValues?.notifyTelegram ?? false);
-  const [birthday, setBirthday] = useState<string>(() => {
-    const b = initialValues?.birthday;
-    if (!b) return "";
-    try { return new Date(b).toISOString().slice(0,10); } catch { return ""; }
-  });
-
-  const [error, setError] = useState<string>("");
+  allowRoleChange = true,
+  onSuccess,
+}: Props) {
+  const [v, setV] = useState({ ...initialValues });
   const [loading, setLoading] = useState(false);
-  const [password, setPassword] = useState(mode === "create" ? "test-password" : "");
-  const [showPass, setShowPass] = useState(mode === "create");
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  const disableRole = forbid.includes("role") || !allowRoleChange || mode === "self";
-  const disableClassroom = forbid.includes("classroom") || mode === "self";
-  const hidePassword = forbid.includes("password") || mode === "self";
+  const isCreate = mode === "create";
+  const isSelf = mode === "self";
+  const canChangeRole = allowRoleChange && !forbid.includes("role");
+  const canChangeClassroom = !forbid.includes("classroom");
+  const canChangeEmail = !forbid.includes("email");            // <-- EMAIL
 
-  useEffect(() => {
-    let aborted = false;
-    (async () => {
-      try {
-        const r = await fetch("/api/roles", { cache: "no-store" });
-        const j = await r.json().catch(() => null);
-        let list: any[] = Array.isArray(j) ? j : (Array.isArray(j?.roles) ? j.roles : []);
-        if (!Array.isArray(list)) list = [];
-        const norm: RoleDTO[] = list.map((x: any, i: number) => ({
-          id: x.id ?? String(i),
-          name: x.name ?? x.title ?? x.slug,
-          slug: x.slug ?? x.code ?? x.name,
-          power: typeof x.power === "number" ? x.power : undefined,
-        }));
-        if (!aborted) setRoles(norm.length ? norm : FALLBACK_ROLES);
-      } catch { if (!aborted) setRoles(FALLBACK_ROLES); }
-    })();
-    return () => { aborted = true; };
-  }, []);
+  const submitPath =
+    mode === "create"
+      ? "/api/users"
+      : mode === "edit"
+      ? `/api/users/${v.id}`
+      : "/api/profile";
 
-  useEffect(() => {
-    if (!initialValues) return;
-    setName(initialValues.name ?? "");
-    setEmail(initialValues.email ?? "");
-    setPhone(initialValues.phone ?? "");
-    setRoleSlug(initialValues.roleSlug ?? initialValues.roles?.[0]?.slug ?? "");
-    setClassroom(initialValues.classroom ?? "");
-    setSubjects(initialValues.subjects ?? []);
-    setGroups(initialValues.methodicalGroups ?? []);
-    setTelegram(initialValues.telegram ?? "");
-    setAvatarUrl(initialValues.avatarUrl ?? "");
-    setAbout(initialValues.about ?? "");
-    setNotifyEmail(initialValues.notifyEmail ?? true);
-    setNotifyTelegram(initialValues.notifyTelegram ?? false);
-    const b = initialValues.birthday;
-    setBirthday(b ? new Date(b).toISOString().slice(0,10) : "");
-    if (mode !== "create") { setPassword(""); setShowPass(false); }
-  }, [JSON.stringify(initialValues), mode]);
+  const method = mode === "create" ? "POST" : mode === "edit" ? "PATCH" : "PATCH";
 
-  useEffect(() => {
-    if (roleSlug || roles.length === 0) return;
-    const byName =
-      roles.find((r) => r.slug?.toLowerCase().includes("teacher")) ||
-      roles.find((r) => (r.name || "").toLowerCase().includes("педагог"));
-    if (byName) { setRoleSlug(byName.slug); return; }
-    const min = [...roles].sort((a, b) => (a.power ?? 99) - (b.power ?? 99))[0];
-    if (min) setRoleSlug(min.slug);
-  }, [roles, roleSlug]);
+  const canSubmit = useMemo(() => {
+    if (!v.name?.trim()) return false;
+    if (v.email && !isValidEmail(v.email)) return false;       // <-- EMAIL
+    return !loading;
+  }, [v.name, v.email, loading]);
 
-  const canSubmit = useMemo(() => !!name.trim() && (!!roleSlug || disableRole) && !loading, [name, roleSlug, loading, disableRole]);
-
-  async function save(payload: any, id?: string) {
-    if (mode === "self") {
-      return fetch(`/api/profile`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-    }
-
-    if (id) {
-      let res = await fetch(`/api/users/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok && (res.status === 404 || res.status === 405)) {
-        res = await fetch(`/api/users/${id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      }
-      return res;
-    }
-    return fetch("/api/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  }
-
-  async function submit(e: React.FormEvent) {
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    setLoading(true); setError("");
+
+    setLoading(true);
+    setErr(null);
+    setMsg(null);
+
+    const body: any = {
+      name: v.name?.trim(),
+      email: v.email?.trim() || null,                           // <-- EMAIL
+      phone: v.phone || null,
+      classroom: canChangeClassroom ? v.classroom || null : undefined,
+      roleSlug: canChangeRole ? v.roleSlug : undefined,
+      birthday: v.birthday || null,
+      telegram: v.telegram || null,
+      avatarUrl: v.avatarUrl || null,
+      about: v.about || null,
+      notifyEmail: !!v.notifyEmail,
+      notifyTelegram: !!v.notifyTelegram,
+      subjects: v.subjects ?? [],
+      methodicalGroups: v.methodicalGroups ?? [],
+    };
+    if (isCreate && v.password) body.password = v.password;
 
     try {
-      const payload: any = {
-        name: name.trim(),
-        email: email.trim() || undefined,
-        phone: phone.trim() || null,
-        roleSlug: disableRole ? undefined : roleSlug,
-        role: disableRole ? undefined : roleSlug,
-        classroom: disableClassroom ? undefined : (classroom || null),
-        subjects,
-        methodicalGroups: groups,
-        groups,
-        telegram: telegram || undefined,
-        avatarUrl: avatarUrl || undefined,
-        about: about || undefined,
-        notifyEmail,
-        notifyTelegram,
-        birthday: birthday ? new Date(birthday).toISOString() : null,
-      };
+      const res = await fetch(submitPath, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      let j: any = null;
+      try {
+        j = text ? JSON.parse(text) : null;
+      } catch {}
+      if (!res.ok || j?.error) throw new Error(j?.error || text || `Ошибка ${res.status}`);
 
-      if (!hidePassword) {
-        if (mode === "create") {
-          payload.password = password || "test-password";
-        } else if (password.trim() && initialValues?.id) {
-          payload.password = password.trim();
-        }
-      }
-
-      const res = await save(payload, initialValues?.id);
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        setError(j?.message || j?.error || "Ошибка сохранения");
-        return;
-      }
-
+      setMsg("Сохранено");
       onSuccess?.();
-      if (mode === "create") {
-        setName(""); setEmail(""); setPhone(""); setRoleSlug("");
-        setClassroom(""); setSubjects([]); setGroups([]);
-        setTelegram(""); setAvatarUrl(""); setAbout("");
-        setNotifyEmail(true); setNotifyTelegram(false);
-        setPassword("test-password"); setShowPass(true);
-        setBirthday("");
-      }
-    } finally { setLoading(false); }
+    } catch (e: any) {
+      setErr(e?.message || "Ошибка сохранения");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
-    <form onSubmit={submit} className="space-y-3">
-      {error && <div className="text-red-600 mb-2">{error}</div>}
+    <form className="space-y-3" onSubmit={onSubmit}>
+      {err && (
+        <div className="rounded border border-red-300 bg-red-50 text-red-800 p-2 text-sm">
+          {err}
+        </div>
+      )}
+      {msg && (
+        <div className="rounded border border-green-300 bg-green-50 text-green-800 p-2 text-sm">
+          {msg}
+        </div>
+      )}
 
-      <div>
-        <label className="block mb-1">ФИО*</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Иванов Иван Иванович" required />
-      </div>
-
-      <div>
-        <label className="block mb-1">Телефон</label>
-        <input value={phone} onChange={(e) => setPhone(e.target.value.replace(/[^\d+]/g, ""))} placeholder="+7XXXXXXXXXX" />
-      </div>
-
-      <div>
-        <label className="block mb-1">Дата рождения</label>
-        <input type="date" value={birthday} onChange={(e) => setBirthday(e.target.value)} />
-      </div>
-
-      {!disableRole && (
+      <div className="grid md:grid-cols-2 gap-3">
         <div>
-          <label className="block mb-1">Роль*</label>
-          <select value={roleSlug} onChange={(e) => setRoleSlug(e.target.value)}>
-            <option value="">— выберите роль —</option>
-            {roles.map((r) => (<option key={r.id} value={r.slug}>{r.name}</option>))}
+          <label className="block mb-1">ФИО</label>
+          <input
+            value={v.name || ""}
+            onChange={(e) => setV({ ...v, name: e.target.value })}
+            required
+            style={{ height: 36, fontSize: 14 }}
+          />
+        </div>
+
+        <div>
+          <label className="block mb-1">E-mail</label>
+          <input
+            type="email"
+            value={v.email || ""}
+            onChange={(e) => setV({ ...v, email: e.target.value })}
+            style={{ height: 36, fontSize: 14 }}
+            disabled={!canChangeEmail}
+          />
+          {v.email && !isValidEmail(v.email) && (
+            <div className="text-xs text-red-600 mt-1">Некорректный e-mail</div>
+          )}
+        </div>
+
+        <div>
+          <label className="block mb-1">Телефон</label>
+          <input
+            value={v.phone || ""}
+            onChange={(e) => setV({ ...v, phone: e.target.value })}
+            style={{ height: 36, fontSize: 14 }}
+          />
+        </div>
+
+        <div>
+          <label className="block mb-1">Дата рождения</label>
+          <input
+            type="date"
+            value={v.birthday ? v.birthday.slice(0, 10) : ""}
+            onChange={(e) =>
+              setV({ ...v, birthday: e.target.value ? `${e.target.value}` : null })
+            }
+            style={{ height: 36, fontSize: 14 }}
+          />
+        </div>
+
+        <div>
+          <label className="block mb-1">Telegram</label>
+          <input
+            value={v.telegram || ""}
+            onChange={(e) => setV({ ...v, telegram: e.target.value })}
+            style={{ height: 36, fontSize: 14 }}
+          />
+        </div>
+
+        <div>
+          <label className="block mb-1">Аватар (URL)</label>
+          <input
+            value={v.avatarUrl || ""}
+            onChange={(e) => setV({ ...v, avatarUrl: e.target.value })}
+            style={{ height: 36, fontSize: 14 }}
+          />
+        </div>
+
+        <div>
+          <label className="block mb-1">Классное руководство</label>
+          <input
+            value={v.classroom || ""}
+            onChange={(e) => setV({ ...v, classroom: e.target.value })}
+            style={{ height: 36, fontSize: 14 }}
+            disabled={!canChangeClassroom}
+          />
+        </div>
+
+        <div>
+          <label className="block mb-1">Роль</label>
+          <select
+            value={v.roleSlug || ""}
+            onChange={(e) => setV({ ...v, roleSlug: e.target.value })}
+            className="input w-full"
+            style={{ height: 36, fontSize: 14 }}
+            disabled={!canChangeRole}
+          >
+            <option value="">— выберите —</option>
+            {ROLES.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.label}
+              </option>
+            ))}
           </select>
         </div>
-      )}
 
-      {!hidePassword && (
+        <div className="md:col-span-2">
+          <label className="block mb-1">О себе</label>
+          <textarea
+            value={v.about || ""}
+            onChange={(e) => setV({ ...v, about: e.target.value })}
+            rows={3}
+          />
+        </div>
+
         <div>
-          <label className="block mb-1">
-            Пароль {mode === "edit" && <span className="text-xs opacity-70">(оставьте пустым, чтобы не менять)</span>}
+          <label className="block mb-1">Предметы (через запятую)</label>
+          <input
+            value={(v.subjects || []).join(", ")}
+            onChange={(e) =>
+              setV({ ...v, subjects: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })
+            }
+            style={{ height: 36, fontSize: 14 }}
+          />
+        </div>
+
+        <div>
+          <label className="block mb-1">Методические объединения (через запятую)</label>
+          <input
+            value={(v.methodicalGroups || []).join(", ")}
+            onChange={(e) =>
+              setV({
+                ...v,
+                methodicalGroups: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+              })
+            }
+            style={{ height: 36, fontSize: 14 }}
+          />
+        </div>
+
+        <div className="flex items-center gap-4 md:col-span-2">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={!!v.notifyEmail}
+              onChange={(e) => setV({ ...v, notifyEmail: e.target.checked })}
+            />
+            Уведомления на e-mail
           </label>
-          <div className="flex items-center gap-2">
-            <input type={showPass ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)}
-                   placeholder={mode === "create" ? "test-password" : "Новый пароль"} style={{ flex: 1 }} />
-            <button type="button" className="btn" onClick={() => setShowPass((v) => !v)}>{showPass ? "Скрыть" : "Показать"}</button>
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={!!v.notifyTelegram}
+              onChange={(e) => setV({ ...v, notifyTelegram: e.target.checked })}
+            />
+            Уведомления в Telegram
+          </label>
+        </div>
+
+        {isCreate && (
+          <div className="md:col-span-2">
+            <label className="block mb-1">Начальный пароль (опционально)</label>
+            <input
+              type="password"
+              value={v.password || ""}
+              onChange={(e) => setV({ ...v, password: e.target.value })}
+              style={{ height: 36, fontSize: 14 }}
+            />
           </div>
-        </div>
-      )}
-
-      {!disableClassroom && (
-        <div>
-          <label className="block mb-1">Классное руководство (например, 9Б)</label>
-          <input value={classroom} onChange={(e) => setClassroom(e.target.value)} placeholder="9Б" />
-        </div>
-      )}
-
-      {/* Ниже — факультативные поля; оставлены для визуального единообразия, даже если сейчас не уходят в БД */}
-      <div>
-        <label className="block mb-1">Предметы</label>
-        <MultiSelectList options={SUBJECTS_2025_RU} value={subjects} onChange={setSubjects} columns={2} />
+        )}
       </div>
 
-      <div>
-        <label className="block mb-1">Группы пользователей (МО)</label>
-        <MultiSelectList options={METHODICAL_GROUPS_108} value={groups} onChange={setGroups} columns={2} />
+      <div className="flex justify-end gap-2">
+        <button type="submit" className="btn-primary" disabled={!canSubmit} style={{ padding: "6px 12px", fontSize: 14 }}>
+          {loading ? "Сохранение…" : "Сохранить"}
+        </button>
       </div>
-
-      <div>
-        <label className="block mb-1">Telegram</label>
-        <input value={telegram} onChange={(e) => setTelegram(e.target.value)} placeholder="@username" />
-      </div>
-
-      <div>
-        <label className="block mb-1">Ссылка на фото (аватар)</label>
-        <input value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://..." />
-      </div>
-
-      <div>
-        <label className="block mb-1">О себе</label>
-        <textarea value={about} onChange={(e) => setAbout(e.target.value)} rows={4} placeholder="Кратко о себе" />
-      </div>
-
-      <div className="flex items-center gap-6">
-        <label className="inline-flex items-center gap-2">
-          <input type="checkbox" checked={notifyEmail} onChange={(e) => setNotifyEmail(e.target.checked)} />
-          <span>Уведомления на email</span>
-        </label>
-        <label className="inline-flex items-center gap-2">
-          <input type="checkbox" checked={notifyTelegram} onChange={(e) => setNotifyTelegram(e.target.checked)} />
-          <span>Уведомления в Telegram</span>
-        </label>
-      </div>
-
-      <button type="submit" className="btn-primary" disabled={!canSubmit}>
-        {loading ? "Сохранение…" : mode === "edit" ? "Сохранить" : mode === "self" ? "Обновить профиль" : "Добавить"}
-      </button>
     </form>
   );
 }
