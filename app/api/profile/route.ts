@@ -36,7 +36,8 @@ export async function GET() {
     return json({
       id: u.id,
       name: u.name ?? null,
-      email: u.email ?? null, // <-- EMAIL
+      username: u.username ?? null, // только показываем
+      email: u.email ?? null,
       phone: u.phone ?? null,
       classroom: u.classroom ?? null,
       role: u.role ?? null,
@@ -63,7 +64,7 @@ export async function PATCH(req: Request) {
     const b = await req.json().catch(() => ({} as any));
     const data: any = {};
     if (typeof b?.name === "string") data.name = b.name.trim();
-    if (b?.email !== undefined) data.email = normEmail(b.email); // <-- EMAIL
+    if (b?.email !== undefined) data.email = normEmail(b.email);
     if (typeof b?.phone === "string" || b?.phone === null) data.phone = b.phone || null;
     if (b?.birthday !== undefined) data.birthday = toDateOrNull(b.birthday);
     if (b?.subjects !== undefined) data.subjects = toDbStrArray(b.subjects);
@@ -73,13 +74,15 @@ export async function PATCH(req: Request) {
     if (typeof b?.avatarUrl === "string" || b?.avatarUrl === null) data.avatarUrl = b.avatarUrl ?? null;
     if (typeof b?.notifyEmail === "boolean") data.notifyEmail = b.notifyEmail;
     if (typeof b?.notifyTelegram === "boolean") data.notifyTelegram = b.notifyTelegram;
+    // username здесь не меняем
 
     const u = (await (prisma as any).user.update({ where: { id: uid }, data })) as any;
 
     return json({
       id: u.id,
       name: u.name ?? null,
-      email: u.email ?? null, // <-- EMAIL
+      username: u.username ?? null,
+      email: u.email ?? null,
       phone: u.phone ?? null,
       classroom: u.classroom ?? null,
       role: u.role ?? null,

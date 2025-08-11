@@ -50,26 +50,21 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const b = await req.json().catch(() => ({} as any));
   const data: any = {};
   if (typeof b?.name === "string") data.name = b.name.trim();
-  if (b?.email !== undefined) data.email = normEmail(b.email); // <-- EMAIL
-  if (typeof b?.phone === "string" || b?.phone === null)
-    data.phone = b.phone || null;
-  if (typeof b?.classroom === "string" || b?.classroom === null)
-    data.classroom = b.classroom || null;
+  if (typeof b?.username === "string" || b?.username === null) data.username = b.username?.trim() || null;
+  if (b?.email !== undefined) data.email = normEmail(b.email);
+  if (typeof b?.phone === "string" || b?.phone === null) data.phone = b.phone || null;
+  if (typeof b?.classroom === "string" || b?.classroom === null) data.classroom = b.classroom || null;
   if (typeof b?.roleSlug === "string" || typeof b?.role === "string")
     data.role = (b?.roleSlug as string) ?? (b?.role as string);
   if (b?.birthday !== undefined) data.birthday = toDateOrNull(b.birthday);
   if (b?.subjects !== undefined) data.subjects = toDbStrArray(b.subjects);
   if (b?.methodicalGroups !== undefined)
     data.methodicalGroups = toDbStrArray(b.methodicalGroups);
-  if (typeof b?.about === "string" || b?.about === null)
-    data.about = b.about ?? null;
-  if (typeof b?.telegram === "string" || b?.telegram === null)
-    data.telegram = b.telegram ?? null;
-  if (typeof b?.avatarUrl === "string" || b?.avatarUrl === null)
-    data.avatarUrl = b.avatarUrl ?? null;
+  if (typeof b?.about === "string" || b?.about === null) data.about = b.about ?? null;
+  if (typeof b?.telegram === "string" || b?.telegram === null) data.telegram = b.telegram ?? null;
+  if (typeof b?.avatarUrl === "string" || b?.avatarUrl === null) data.avatarUrl = b.avatarUrl ?? null;
   if (typeof b?.notifyEmail === "boolean") data.notifyEmail = b.notifyEmail;
-  if (typeof b?.notifyTelegram === "boolean")
-    data.notifyTelegram = b.notifyTelegram;
+  if (typeof b?.notifyTelegram === "boolean") data.notifyTelegram = b.notifyTelegram;
   if (typeof b?.password === "string" && b.password.trim())
     data.passwordHash = await hash(b.password.trim(), 10);
 

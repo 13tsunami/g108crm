@@ -26,8 +26,7 @@ function canManage(s: any) {
 function normEmail(v: unknown): string | null {
   const s = String(v ?? "").trim();
   if (!s) return null;
-  // простая валидация
-  return /\S+@\S+\.\S+/.test(s) ? s : s; // позволяем любой корректный вид, сервер не падает
+  return /\S+@\S+\.\S+/.test(s) ? s : s;
 }
 
 export async function GET() {
@@ -38,7 +37,8 @@ export async function GET() {
     rows.map((u) => ({
       id: u.id,
       name: u.name ?? null,
-      email: u.email ?? null, // <-- EMAIL
+      username: u.username ?? null,
+      email: u.email ?? null,
       phone: u.phone ?? null,
       classroom: u.classroom ?? null,
       role: u.role ?? "teacher",
@@ -65,8 +65,9 @@ export async function POST(req: Request) {
 
   const data: any = {
     name: String(b?.name ?? "").trim(),
+    username: typeof b?.username === "string" ? b.username.trim() || null : null,
     role: typeof b?.roleSlug === "string" ? b.roleSlug : b?.role ?? "teacher",
-    email: normEmail(b?.email), // <-- EMAIL
+    email: normEmail(b?.email),
     phone: b?.phone || null,
     classroom: b?.classroom || null,
     birthday: toDateOrNull(b?.birthday),
@@ -80,6 +81,7 @@ export async function POST(req: Request) {
     passwordHash: password ? await hash(password, 10) : null,
   };
   if (!data.name) return json({ error: "Имя обязательно" }, { status: 400 });
+  if (!data.username) return json({ error: "Логин обязателен" }, { status: 400 });
 
   const created = (await (prisma as any).user.create({ data })) as any;
 

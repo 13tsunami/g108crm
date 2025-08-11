@@ -2,12 +2,12 @@
 
 import React, { useEffect, useState } from "react";
 import UserForm from "@/components/UserForm";
-import { safeJson } from "@/lib/http";
 
 type MeDTO = {
   id: string;
   name: string | null;
-  email: string | null;         // <-- EMAIL
+  username: string | null;
+  email: string | null;
   phone: string | null;
   classroom: string | null;
   role: string | null;
@@ -31,8 +31,9 @@ export default function SettingsPage() {
     setErr(null);
     try {
       const res = await fetch("/api/profile", { cache: "no-store" });
-      if (!res.ok) throw new Error(`/api/profile ${res.status}`);
-      const data = await safeJson<MeDTO>(res);
+      const text = await res.text();
+      const data: any = text ? JSON.parse(text) : null;
+      if (!res.ok || data?.error) throw new Error(data?.error || `/api/profile ${res.status}`);
       setMe(data);
     } catch (e: any) {
       setErr(e?.message || String(e));
@@ -58,7 +59,7 @@ export default function SettingsPage() {
       {!loading && me && (
         <>
           <div className="mb-3 text-sm text-neutral-600">
-            Поля «Роль» и «Классное руководство» меняются руководством в разделе «Педагоги». Сменить пароль — на отдельной странице.
+            Роль, классное руководство и логин меняются руководством в разделе «Педагоги».
           </div>
 
           <UserForm
@@ -66,7 +67,8 @@ export default function SettingsPage() {
             initialValues={{
               id: me.id,
               name: me.name ?? "",
-              email: me.email ?? "",         // <-- EMAIL
+              username: me.username ?? "",
+              email: me.email ?? "",
               phone: me.phone ?? "",
               classroom: me.classroom ?? "",
               roleSlug: me.role ?? undefined,
@@ -79,7 +81,7 @@ export default function SettingsPage() {
               subjects: me.subjects ?? [],
               methodicalGroups: me.methodicalGroups ?? [],
             }}
-            forbid={["role", "classroom", "password"]}  // e-mail не запрещаем
+            forbid={["role", "classroom", "password", "username"]}
             allowRoleChange={false}
             onSuccess={load}
           />

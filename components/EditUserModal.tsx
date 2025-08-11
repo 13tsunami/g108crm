@@ -7,6 +7,7 @@ import UserForm from "./UserForm";
 type RowUser = {
   id: string;
   name: string;
+  username?: string | null;
   email?: string | null;
   phone?: string | null;
   classroom?: string | null;
@@ -33,7 +34,6 @@ export default function EditUserModal({
   allowRoleChange?: boolean;
 }) {
   if (!user) return null;
-
   return (
     <Modal open={true} onClose={onClose} title="Редактировать пользователя" width={720}>
       <UserForm
@@ -41,6 +41,7 @@ export default function EditUserModal({
         initialValues={{
           id: user.id,
           name: user.name ?? "",
+          username: user.username ?? "",
           email: user.email ?? "",
           phone: user.phone ?? "",
           classroom: user.classroom ?? "",

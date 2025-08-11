@@ -14,13 +14,13 @@ export default function AddUserModal({
   onAdded?: () => void;
 }) {
   if (!open) return null;
-
   return (
     <Modal open={open} onClose={onClose} title="Добавить пользователя" width={720}>
       <UserForm
         mode="create"
         initialValues={{
           name: "",
+          username: "",   // логин обязателен при создании
           email: "",
           phone: "",
           classroom: "",
