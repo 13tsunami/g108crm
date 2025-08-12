@@ -1,23 +1,11 @@
 // app/chat/page.tsx
 "use client";
 
-import React, {
-  useEffect,
-  useRef,
-  useState,
-  useLayoutEffect,
-  useCallback,
-} from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
-import { createPortal } from "react-dom";
 
 type SimpleUser = { id: string; name: string | null; email?: string | null };
-type Message = {
-  id: string;
-  text: string;
-  createdAt: string;
-  author: { id: string; name: string | null };
-};
+type Message = { id: string; text: string; createdAt: string; author: { id: string; name: string | null } };
 type ThreadListItem = {
   id: string;
   peerId: string;
@@ -27,41 +15,24 @@ type ThreadListItem = {
   unreadCount?: number;
 };
 
+const BRAND = "#8d2828";
+
 const MONTHS_RU = ["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
 const fmt = (iso: string) => {
   const x = new Date(iso);
   return `${String(x.getDate()).padStart(2,"0")} ${MONTHS_RU[x.getMonth()]} ${x.getFullYear()}, ${String(x.getHours()).padStart(2,"0")}:${String(x.getMinutes()).padStart(2,"0")}`;
 };
 
-const lsKeys = (uid?: string) => ({
-  threads: `chat:u:${uid ?? "anon"}:threads`,
-  last: `chat:u:${uid ?? "anon"}:last`,
-});
+const ls = (uid?: string) => ({ threads: `chat:u:${uid ?? "anon"}:threads`, last: `chat:u:${uid ?? "anon"}:last` });
 
-function mergeThreads(base: ThreadListItem[], incoming: ThreadListItem[]) {
-  const map = new Map<string, ThreadListItem>();
-  for (const t of base) map.set(t.id, t);
-  for (const t of incoming) map.set(t.id, { ...(map.get(t.id) as any), ...t });
-  const arr = Array.from(map.values());
-  arr.sort((a,b) => (b.lastMessageAt ? Date.parse(b.lastMessageAt) : 0) - (a.lastMessageAt ? Date.parse(a.lastMessageAt) : 0));
-  return arr;
-}
-function uniqueById(arr: ThreadListItem[]) {
-  const seen = new Set<string>(); const out: ThreadListItem[] = [];
-  for (const t of arr) if (!seen.has(t.id)) { seen.add(t.id); out.push(t); }
-  return out;
-}
-// Доп. нормализация: если по ошибке приходят два личных треда с одним peerId — показываем самый свежий.
 function dedupeByPeer(list: ThreadListItem[]) {
   const byPeer = new Map<string, ThreadListItem>();
   for (const t of list) {
     const cur = byPeer.get(t.peerId);
-    if (!cur) byPeer.set(t.peerId, t);
-    else {
-      const curTs = cur.lastMessageAt ? Date.parse(cur.lastMessageAt) : 0;
-      const nxtTs = t.lastMessageAt ? Date.parse(t.lastMessageAt) : 0;
-      byPeer.set(t.peerId, nxtTs >= curTs ? t : cur);
-    }
+    if (!cur) { byPeer.set(t.peerId, t); continue; }
+    const a = t.lastMessageAt ? Date.parse(t.lastMessageAt) : 0;
+    const b = cur.lastMessageAt ? Date.parse(cur.lastMessageAt) : 0;
+    byPeer.set(t.peerId, a >= b ? t : cur);
   }
   const arr = Array.from(byPeer.values());
   arr.sort((a,b) => (b.lastMessageAt ? Date.parse(b.lastMessageAt) : 0) - (a.lastMessageAt ? Date.parse(a.lastMessageAt) : 0));
@@ -70,48 +41,8 @@ function dedupeByPeer(list: ThreadListItem[]) {
 
 export default function ChatPage() {
   const { data: session, status } = useSession();
-  const [me, setMe] = useState<{ id?: string; name?: string | null } | null>(null);
+  const meId = useMemo(() => (session?.user as any)?.id as string | undefined, [session?.user]);
 
-  // --- поиск пользователей ---
-  const [search, setSearch] = useState("");
-  const [searching, setSearching] = useState(false);
-  const [found, setFound] = useState<SimpleUser[]>([]);
-  const [allUsers, setAllUsers] = useState<SimpleUser[] | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-
-  const searchAbortRef = useRef<AbortController | null>(null);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
-
-  // позиция дропдауна — рендерим порталом в body
-  const [ddPos, setDdPos] = useState<{ left: number; top: number; width: number } | null>(null);
-  const updateDdPos = useCallback(() => {
-    const el = searchInputRef.current; if (!el) return;
-    const r = el.getBoundingClientRect();
-    setDdPos({ left: Math.round(r.left), top: Math.round(r.bottom + 6), width: Math.round(r.width) });
-  }, []);
-  useLayoutEffect(() => {
-    if (!searchOpen) return;
-    updateDdPos();
-    const onScroll = () => updateDdPos();
-    const onResize = () => updateDdPos();
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
-    return () => {
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-    };
-  }, [searchOpen, updateDdPos, search]);
-  useEffect(() => {
-    if (!searchOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const el = searchInputRef.current;
-      if (el && e.target instanceof Node && !el.contains(e.target)) setSearchOpen(false);
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [searchOpen]);
-
-  // --- список тредов и сообщений ---
   const [threads, setThreads] = useState<ThreadListItem[]>([]);
   const [active, setActive] = useState<ThreadListItem | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -120,65 +51,139 @@ export default function ChatPage() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
 
-  const endRef = useRef<HTMLDivElement | null>(null);
+  // подпись «кто отправил последний» в списке тредов
+  const [lastFromMe, setLastFromMe] = useState<Record<string, boolean>>({});
+
+  // поиск по диалогу
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<string[]>([]);
+  const [hitIdx, setHitIdx] = useState(0);
+
+  // выбранные файлы (UI только)
+  const [files, setFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // поиск людей
+  const [search, setSearch] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [found, setFound] = useState<SimpleUser[]>([]);
+  const [allUsers, setAllUsers] = useState<SimpleUser[] | null>(null);
+  const [openDd, setOpenDd] = useState(false);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const ddPos = useRef<{ left: number; top: number; width: number } | null>(null);
+
+  // тех
   const userSseRef = useRef<EventSource | null>(null);
   const pollRef = useRef<number | null>(null);
-  const backoffRef = useRef(1000);
   const meIdRef = useRef<string | undefined>(undefined);
-  const typingCooldownRef = useRef<number>(0);
+  const backoffRef = useRef(1000);
+  const typingCooldownRef = useRef(0);
   const typingHideTimerRef = useRef<number | null>(null);
 
-  // --- удаление (оптимистично + cooldown защиты от «воскрешения») ---
-  const [deleting, setDeleting] = useState<Set<string>>(new Set());
-  const deletedCooldownRef = useRef<Map<string, number>>(new Map());
-  const inCooldown = (id: string) => {
-    const until = deletedCooldownRef.current.get(id);
-    return !!until && until > Date.now();
+  // звук
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const lastSoundAtRef = useRef(0);
+
+  // скролл
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const msgRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const justOpenedRef = useRef(false);
+  const isNearBottom = () => {
+    const el = paneRef.current; if (!el) return true;
+    return el.scrollHeight - (el.scrollTop + el.clientHeight) < 120;
   };
-  const startCooldown = (id: string, ms = 5000) => {
-    deletedCooldownRef.current.set(id, Date.now() + ms);
-    window.setTimeout(() => {
-      const until = deletedCooldownRef.current.get(id);
-      if (until && until <= Date.now()) deletedCooldownRef.current.delete(id);
-    }, ms + 50);
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => bottomRef.current?.scrollIntoView({ behavior });
+  const jumpToBottomInstant = () => {
+    const el = paneRef.current; if (!el) return;
+    const prev = el.style.scrollBehavior;
+    el.style.scrollBehavior = "auto";
+    el.scrollTop = el.scrollHeight;
+    // вернуть smooth после кадра
+    requestAnimationFrame(() => { el.style.scrollBehavior = prev || "smooth"; });
+  };
+  const scrollToMsg = (id: string) => {
+    const el = msgRefs.current[id];
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
-  // --- защита от повторного ensure при быстром повторном выборе одного и того же собеседника ---
-  const openInFlightRef = useRef<string | null>(null);
-
-  function headersWithId(extra?: Record<string, string>): Record<string, string> {
+  function headers(extra?: Record<string, string>) {
     const h: Record<string, string> = { ...(extra ?? {}) };
     if (meIdRef.current) h["X-User-Id"] = String(meIdRef.current);
     return h;
   }
 
+  const styles = (
+    <style>{`
+      .chat-root { display: grid; grid-template-columns: 360px 1fr; min-height: 560px; }
+      .threads { border-right: 1px solid #e5e7eb; font-size: 13px; }
+      .thread { width: 100%; text-align: left; padding: 8px 44px 8px 12px; border-radius: 12px; border: 1px solid #e5e7eb; background: #fff; position: relative; cursor: pointer; }
+      .thread + .thread { margin-top: 8px; }
+      .thread--active { background: #eef2ff; border-color: #c7e3ff; }
+      .thread--unread { background: #fff7ed; border-color: #fde68a; }
+      .thread--unread::before { content:""; position:absolute; left:-1px; top:-1px; bottom:-1px; width:4px; background:#ef9b28; border-top-left-radius:12px; border-bottom-left-radius:12px; }
+      .thread__last { color:#374151; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .thread__last--mine { text-align: right; }
+      .badge { position:absolute; right:30px; top:4px; font-size:10px; background:${BRAND}; color:#fff; padding:0 5px; border-radius:9999px; } /* ещё меньше */
+
+      .pane { display:grid; grid-template-rows: auto 1fr auto; }
+      .pane-header { position:relative; padding:12px 12px 6px; border-bottom:1px solid #e5e7eb; min-height: 56px; }
+      .pane-title { text-align:center; font-weight:700; }
+      .pane-typing { position:absolute; right:12px; top:34px; color:#6b7280; font-size:12px; }
+      .pane-search { position:absolute; right:12px; top:8px; width:220px; display:flex; gap:6px; }
+      .pane-search input { width:100%; padding:6px 8px; border:1px solid #e5e7eb; border-radius:8px; outline:none; }
+      .pane-search small { display:inline-block; min-width:42px; text-align:center; color:#6b7280; line-height:24px; }
+      .pane-body { padding:12px; overflow:auto; height: 62vh; scroll-behavior: smooth; }
+      .pane-footer { border-top:1px solid #e5e7eb; padding:12px; display:flex; gap:8px; align-items:flex-start; }
+
+      .btn-del { position:absolute; right:6px; top:6px; width:10px; height:10px; background:${BRAND}; color:#fff; border:none; border-radius:2px; font-weight:800; line-height:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
+
+      .dd { position: fixed; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 16px rgba(0,0,0,.06), 0 4px 6px rgba(0,0,0,.04); z-index:60; max-height:260px; overflow:auto;}
+      .dd-item { width:100%; text-align:left; padding:8px 10px; border:0; background:transparent; cursor:pointer; }
+
+      .msgRow { display:flex; margin-bottom:10px; }
+      .msgRow.mine { justify-content: flex-end; }
+      .msgCard { max-width: 72%; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:8px 10px; display:flex; flex-direction:column; }
+      .msgHead { display:flex; align-items:baseline; gap:6px; font-weight:700; }
+      .msgRow.mine .msgHead { justify-content:flex-end; text-align:right; }
+      .msgRow:not(.mine) .msgHead { justify-content:flex-start; text-align:left; }
+      .msgMeta { color:#6b7280; font-weight:400; }
+      .msgText { margin-top:6px; white-space: pre-wrap; word-break: break-word; }
+      .msgSep { border-top:1px solid #e5e7eb; margin-top:8px; }
+
+      .sendBtn { padding: 0 16px; border-radius: 10px; border: 1px solid ${BRAND}; background: ${BRAND}; color:#fff;
+                 transition: transform .08s ease, box-shadow .08s ease, filter .08s ease; height: 64px; }
+      .sendBtn:hover { box-shadow: 0 3px 10px rgba(0,0,0,.18); transform: translateY(-1px); filter: blur(0.2px) saturate(105%); }
+      .sendBtn:active { transform: translateY(0); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+      .sendBtn:disabled { opacity:.6; cursor: default; filter:none; box-shadow:none; transform:none; }
+
+      .plusBtn { width:40px; height:64px; border:1px dashed ${BRAND}; color:${BRAND}; background:#fff; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
+      .plusBtn:hover { background: #fff5f5; }
+
+      mark.chat-hl { background: #fef08a; padding: 0 2px; border-radius: 3px; }
+      .fileChip { display:inline-flex; align-items:center; gap:6px; border:1px solid #e5e7eb; border-radius:999px; padding:2px 8px; margin-top:6px; margin-right:6px; font-size:12px; }
+      .fileChip button { border:0; background:transparent; cursor:pointer; color:#6b7280; }
+    `}</style>
+  );
+
   useEffect(() => {
     if (status === "loading") return;
     if (status !== "authenticated") {
       meIdRef.current = undefined;
-      setMe(null);
       setThreads([]); setActive(null); setMessages([]);
-      if (userSseRef.current) { userSseRef.current.close(); userSseRef.current = null; }
-      if (pollRef.current !== null) { window.clearInterval(pollRef.current); pollRef.current = null; }
+      try { userSseRef.current?.close(); } catch {}
+      userSseRef.current = null;
+      if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; }
       return;
     }
-
-    const uid = (session?.user as any)?.id as string | undefined;
-    meIdRef.current = uid;
-    setMe({ id: uid, name: session?.user?.name ?? null });
-    // ➜ ДОБАВИТЬ: сохраняем uid в куку, чтобы все API (и ручные открытия URL)
-// автоматически знали, кто делает запрос.
-    if (uid) {
-    document.cookie = `uid=${encodeURIComponent(uid)}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    }
+    meIdRef.current = meId;
 
     try {
-      const k = lsKeys(uid);
-      const cached = JSON.parse(localStorage.getItem(k.threads) || "[]");
-      if (Array.isArray(cached) && cached.length) setThreads(dedupeByPeer(cached));
-      const lastId = localStorage.getItem(k.last) || "";
-      if (lastId && Array.isArray(cached)) {
-        const t = cached.find((x: ThreadListItem) => x.id === lastId);
+      const cached = JSON.parse(localStorage.getItem(ls(meId).threads) || "[]");
+      if (Array.isArray(cached)) setThreads(dedupeByPeer(cached));
+      const last = localStorage.getItem(ls(meId).last) || "";
+      if (last && Array.isArray(cached)) {
+        const t = cached.find((x: ThreadListItem) => x.id === last);
         if (t) setActive(t);
       }
     } catch {}
@@ -187,158 +192,161 @@ export default function ChatPage() {
     preloadUsers();
     attachSSE();
     startPolling();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, session?.user?.id, session?.user?.name]);
+  }, [status, meId]);
 
-  // синхронизация threads → localStorage (+событие для индикатора в сайдбаре)
   useEffect(() => {
-    const uid = me?.id;
-    if (!uid) return;
+    if (!meId) return;
     try {
-      const k = lsKeys(uid);
-      localStorage.setItem(k.threads, JSON.stringify(threads));
+      localStorage.setItem(ls(meId).threads, JSON.stringify(threads));
       window.dispatchEvent(new Event("g108:chat-threads-updated"));
     } catch {}
-  }, [threads, me?.id]);
+  }, [threads, meId]);
 
-  // ---------- ПОИСК ----------
-  async function runSearch(q: string) {
-    setSearch(q);
-    const s = q.trim();
-    if (!s) { setFound([]); setSearching(false); return; }
+  // автопрокрутка в процессе общения (не при открытии)
+  useEffect(() => {
+    if (!active) return;
+    if (justOpenedRef.current) return;
+    const last = messages[messages.length - 1];
+    const mine = last?.author?.id === meIdRef.current;
+    if (mine || isNearBottom()) scrollToBottom("smooth");
+  }, [messages, active?.id]);
 
-    try { searchAbortRef.current?.abort(); } catch {}
-    const ac = new AbortController();
-    searchAbortRef.current = ac;
+  // поиск по диалогу
+  useEffect(() => {
+    if (!q.trim()) { setHits([]); setHitIdx(0); return; }
+    const needle = q.toLocaleLowerCase("ru-RU");
+    const ids = messages.filter(m => (m.text || "").toLocaleLowerCase("ru-RU").includes(needle)).map(m => m.id);
+    setHits(ids);
+    setHitIdx(0);
+    if (ids.length) scrollToMsg(ids[0]);
+  }, [q, messages]);
 
-    setSearching(true);
-    let result: SimpleUser[] = [];
-    try {
-      const r = await fetch(`/api/chat/search-users?q=${encodeURIComponent(s)}`, { cache: "no-store", headers: headersWithId(), signal: ac.signal });
-      if (r.ok) { const arr = await r.json(); if (Array.isArray(arr)) result = arr; }
-    } catch {}
-
-    if ((!result || result.length === 0) && allUsers && allUsers.length) {
-      const needle = s.toLocaleLowerCase("ru-RU");
-      result = allUsers
-        .filter(u => (u.name || "").toLocaleLowerCase("ru-RU").includes(needle) || (u.email || "").toLocaleLowerCase("ru-RU").includes(needle))
-        .slice(0, 20);
-    }
-
-    setFound(result);
-    setSearching(false);
-  }
-
-  function pingTyping() {
-    const now = Date.now();
-    if (!active || now < typingCooldownRef.current) return;
-    typingCooldownRef.current = now + 1500;
-    fetch("/api/chat/typing", {
-      method: "POST",
-      headers: headersWithId({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ threadId: active.id }),
-    }).catch(() => {});
-  }
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const hl = (text: string) => {
+    const qt = q.trim();
+    if (!qt) return text;
+    const re = new RegExp(escapeRe(qt), "gi");
+    return text.split(re).reduce<React.ReactNode[]>((acc, part, i, arr) => {
+      acc.push(part);
+      if (i < arr.length - 1) acc.push(<mark key={`hl-${i}`} className="chat-hl">{text.match(re)?.[0] ?? qt}</mark>);
+      return acc;
+    }, []);
+  };
 
   async function reloadThreads() {
-    const uid = meIdRef.current;
-    const k = lsKeys(uid);
+    const r = await fetch("/api/chat/threads/list", { cache: "no-store", headers: headers() }).catch(() => null);
+    if (!r?.ok) return;
+    let list: ThreadListItem[] = [];
+    try { list = await r.json(); } catch {}
+    setThreads(dedupeByPeer(Array.isArray(list) ? list : []));
+    const last = localStorage.getItem(ls(meIdRef.current).last) || "";
+    if (last) {
+      const t = list.find(x => x.id === last);
+      if (t) setActive(t);
+    }
+  }
 
-    const r = await fetch("/api/chat/threads/list", { cache: "no-store", headers: headersWithId() }).catch(() => null);
+  async function loadMessages(threadId: string) {
+    justOpenedRef.current = true;
+    const r = await fetch(`/api/chat/threads/${threadId}/messages`, { cache: "no-store", headers: headers() }).catch(() => null);
+    if (!r?.ok) { justOpenedRef.current = false; return; }
+    const data: Message[] = await r.json();
+    setMessages(data);
 
-    if (r && r.ok) {
-      let server: ThreadListItem[] = [];
-      try { server = await r.json(); } catch {}
-      const fromServer = dedupeByPeer((Array.isArray(server) ? server : []).filter(t => !inCooldown(t.id)));
-      setThreads(fromServer);
+    const last = data[data.length - 1];
+    setLastFromMe(prev => ({ ...prev, [threadId]: !!last && last.author?.id === meIdRef.current }));
 
-      const lastId = localStorage.getItem(k.last) || "";
-      if (lastId) {
-        const t = fromServer.find(x => x.id === lastId) || null;
-        if (t) setActive(t);
-        else if (active && active.id && !fromServer.some(x => x.id === active.id)) {
-          setActive(null);
-          setMessages([]);
-        }
-      }
-      return;
+    const s = await fetch(`/api/chat/threads/${threadId}/read`, { method: "GET", headers: headers(), cache: "no-store" }).catch(() => null);
+    if (s?.ok) {
+      const json = await s.json() as { myReadAt: string | null; peerReadAt: string | null };
+      setPeerReadAt(json.peerReadAt);
     }
 
+    // сразу вниз — без плавной прокрутки
+    setTimeout(() => {
+      jumpToBottomInstant();
+      // через кадр разрешаем «плавные» автоскроллы
+      setTimeout(() => { justOpenedRef.current = false; }, 50);
+    }, 0);
+  }
+
+  async function preloadUsers() {
+    if (allUsers) return;
     try {
-      const cached: ThreadListItem[] = JSON.parse(localStorage.getItem(k.threads) || "[]");
-      if (!threads.length && Array.isArray(cached)) setThreads(dedupeByPeer(cached.filter(t => !inCooldown(t.id))));
+      const r = await fetch("/api/chat/users", { cache: "no-store", headers: headers() });
+      if (r.ok) setAllUsers(await r.json());
     } catch {}
   }
 
-async function loadMessages(threadId: string) {
-  if (inCooldown(threadId)) return;
-
-  // важно: headersWithId() нужен, чтобы сервер применил clearedAt
-  const r = await fetch(`/api/chat/threads/${threadId}/messages`, {
-    cache: "no-store",
-    headers: headersWithId(),
-  }).catch(() => null);
-  if (!r || !r.ok) return;
-
-  const data: Message[] = await r.json();
-  setMessages(data);
-  queueMicrotask(() => endRef.current?.scrollIntoView({ block: "end" }));
-
-  const s = await fetch(`/api/chat/threads/${threadId}/read`, {
-    method: "GET",
-    headers: headersWithId(),
-    cache: "no-store",
-  }).catch(() => null);
-  if (s?.ok) {
-    const json = await s.json() as { myReadAt: string | null; peerReadAt: string | null };
-    setPeerReadAt(json.peerReadAt);
+  function playIncoming() {
+    const el = audioRef.current;
+    if (!el) return;
+    const now = Date.now();
+    if (now - lastSoundAtRef.current < 300) return; // анти-спам
+    lastSoundAtRef.current = now;
+    // может быть заблокировано политикой браузера до первого взаимодействия — это ок
+    el.currentTime = 0;
+    el.play().catch(() => {});
   }
-}
-
 
   function attachSSE() {
     if (!meIdRef.current) return;
-    if (userSseRef.current) { userSseRef.current.close(); userSseRef.current = null; }
+    try { userSseRef.current?.close(); } catch {}
     const es = new EventSource(`/api/chat/sse/user/${meIdRef.current}`);
     userSseRef.current = es;
 
     es.onopen = () => { backoffRef.current = 1000; };
     es.onerror = () => {
-      if (userSseRef.current) { userSseRef.current.close(); userSseRef.current = null; }
-      const delay = Math.min(backoffRef.current, 15000);
-      window.setTimeout(() => attachSSE(), delay);
+      try { userSseRef.current?.close(); } catch {}
+      userSseRef.current = null;
+      const d = Math.min(backoffRef.current, 15000);
+      setTimeout(() => attachSSE(), d);
       backoffRef.current = Math.min(backoffRef.current * 2, 15000);
     };
+
     es.addEventListener("push", (ev: MessageEvent) => {
       try {
         const p = JSON.parse(ev.data);
-        const tid = p?.threadId as string | undefined;
-        if (tid && inCooldown(tid)) return;
+        const tid: string | undefined = p?.threadId;
+        if (!tid) return;
 
-        if (p?.type === "thread-updated") {
+        if (p?.type === "thread-updated" || p?.type === "thread-deleted") {
           reloadThreads();
-          if (active?.id && tid === active.id) loadMessages(active.id);
-        } else if (p?.type === "message" && tid && p.data) {
+          if (active?.id === tid) loadMessages(tid);
+          return;
+        }
+
+        if (p?.type === "message" && p.data) {
+          const m: Message = p.data;
+          const mine = m.author?.id === meIdRef.current;
+
+          setLastFromMe(prev => ({ ...prev, [tid]: !!mine }));
+
+          // звук только на входящие
+          if (!mine) playIncoming();
+
           if (active?.id === tid) {
-            const m: Message = p.data;
             setMessages(prev => prev.some(x => x.id === m.id) ? prev : [...prev, m]);
-            queueMicrotask(() => endRef.current?.scrollIntoView({ block: "end" }));
-          } else {
-            reloadThreads();
+            if (!mine) fetch(`/api/chat/threads/${tid}/read`, { method: "POST", headers: headers() }).catch(() => {});
           }
-        } else if (p?.type === "typing" && tid) {
+          reloadThreads();
+          return;
+        }
+
+        if (p?.type === "typing" && tid) {
           if (active?.id === tid) {
             setPeerTyping(true);
-            if (typingHideTimerRef.current) window.clearTimeout(typingHideTimerRef.current);
+            if (typingHideTimerRef.current) clearTimeout(typingHideTimerRef.current);
             typingHideTimerRef.current = window.setTimeout(() => setPeerTyping(false), 3000);
           }
+          return;
         }
       } catch {}
     });
   }
 
   function startPolling() {
-    if (pollRef.current !== null) window.clearInterval(pollRef.current);
+    if (pollRef.current !== null) clearInterval(pollRef.current);
     pollRef.current = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       reloadThreads();
@@ -346,194 +354,137 @@ async function loadMessages(threadId: string) {
     }, 2000);
   }
 
-  async function preloadUsers() {
-    if (allUsers) return;
+  async function runSearch(q: string) {
+    setSearch(q);
+    const s = q.trim();
+    if (!s) { setFound([]); setSearching(false); return; }
+    setSearching(true);
+    let result: SimpleUser[] = [];
     try {
-      const r = await fetch("/api/chat/users", { cache: "no-store", headers: headersWithId() });
-      if (r.ok) setAllUsers(await r.json());
+      const r = await fetch(`/api/chat/search-users?q=${encodeURIComponent(s)}`, { cache: "no-store", headers: headers() });
+      if (r.ok) { const arr = await r.json(); if (Array.isArray(arr)) result = arr; }
     } catch {}
+    if ((!result || result.length === 0) && allUsers && allUsers.length) {
+      const needle = s.toLocaleLowerCase("ru-RU");
+      result = allUsers.filter(u =>
+        (u.name || "").toLocaleLowerCase("ru-RU").includes(needle) ||
+        (u.email || "").toLocaleLowerCase("ru-RU").includes(needle)
+      ).slice(0, 20);
+    }
+    setFound(result);
+    setSearching(false);
   }
 
-  // ---------- ОТКРЫТИЕ ЧАТА ----------
+  const placeDd = useCallback(() => {
+    const el = searchRef.current; if (!el) return;
+    const r = el.getBoundingClientRect();
+    ddPos.current = { left: Math.round(r.left), top: Math.round(r.bottom + 6), width: Math.round(r.width) };
+  }, []);
+  useLayoutEffect(() => {
+    if (!openDd) return;
+    placeDd();
+    const onResize = () => placeDd();
+    const onScroll = () => placeDd();
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
+    return () => { window.removeEventListener("resize", onResize); window.removeEventListener("scroll", onScroll, true); };
+  }, [openDd, placeDd]);
+
+  function openSearch() { setOpenDd(true); placeDd(); }
+  function closeSearch() { setOpenDd(false); }
+
+  useEffect(() => {
+    if (!openDd) return;
+    const onDown = (e: MouseEvent) => {
+      const el = searchRef.current;
+      const pos = ddPos.current;
+      if (!el || !pos) return;
+      const x = e.clientX; const y = e.clientY;
+      const within = x >= pos.left && x <= pos.left + pos.width && y >= pos.top && y <= pos.top + 260;
+      if (!within && !(el.contains(e.target as Node))) closeSearch();
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [openDd]);
+
   async function openWith(user: SimpleUser) {
     if (!user?.id) return;
+    closeSearch(); setSearch(""); setFound([]);
 
-    // если тред с этим собеседником уже существует — просто открываем его, без ensure
     const existing = threads.find(t => t.peerId === user.id);
-    if (existing) {
-      selectThread(existing);
-      setSearch(""); setFound([]); setSearching(false); setSearchOpen(false);
-      return;
-    }
+    if (existing) { selectThread(existing); return; }
 
-    // защита от повторного клонирования при дабл-клике/повторном выборе
-    if (openInFlightRef.current === user.id) return;
-    openInFlightRef.current = user.id;
+    const r = await fetch("/api/chat/threads/ensure", {
+      method: "POST", headers: headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ otherUserId: user.id, otherName: user.name ?? null })
+    }).catch(() => null);
+    if (!r?.ok) { alert("Не удалось открыть чат"); return; }
 
-    setSearch(""); setFound([]); setSearching(false); setSearchOpen(false);
-
-    // оптимистично (временный тред)
-    const optimistic: ThreadListItem = { id: `tmp_${user.id}`, peerId: user.id, peerName: user.name, lastMessageText: null, lastMessageAt: null, unreadCount: 0 };
-    setThreads(prev => mergeThreads(prev, [optimistic]));
-    setActive(optimistic);
-
-    try {
-      const r = await fetch("/api/chat/threads/ensure", {
-        method: "POST",
-        headers: headersWithId({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ otherUserId: user.id, otherName: user.name ?? null })
-      });
-      if (!r.ok) { alert("Не удалось открыть чат"); return; }
-      const { threadId } = await r.json();
-
-      const real: ThreadListItem = { ...optimistic, id: threadId };
-      setActive(real);
-
-      setThreads(prev => {
-        const filtered = prev.filter(t => t.id !== optimistic.id && t.id !== threadId);
-        return dedupeByPeer(uniqueById(mergeThreads(filtered, [real])));
-      });
-
-      try { localStorage.setItem(lsKeys(meIdRef.current).last, threadId); } catch {}
-
-      const list: ThreadListItem[] = await fetch("/api/chat/threads/list", { cache: "no-store", headers: headersWithId() })
-        .then(x => x.ok ? x.json() : []).catch(() => []);
-      if (Array.isArray(list) && list.length) {
-        const normalized = dedupeByPeer(list).filter(t => !inCooldown(t.id));
-        setThreads(prev => dedupeByPeer(uniqueById(mergeThreads(prev, normalized))));
-        const t = normalized.find(x => x.id === threadId) || null;
-        if (t) setActive(t);
-      }
-
-      await loadMessages(threadId);
-      await reloadThreads();
-    } finally {
-      openInFlightRef.current = null;
-    }
+    await reloadThreads();
+    const fresh = await fetch("/api/chat/threads/list", { cache: "no-store", headers: headers() }).then(x => x.ok ? x.json() : []).catch(() => []) as ThreadListItem[];
+    const t = (fresh || []).find(x => x.peerId === user.id) || (threads.find(x => x.peerId === user.id) ?? null);
+    if (t) selectThread(t);
   }
 
-  // ---------- ОТПРАВКА (устойчиво + поддержка tmp_ треда) ----------
-  async function send() {
-    if (!active || sending) return;
-    const text = draft.trim(); if (!text) return;
-
-    setSending(true);
-    try {
-      let threadId = active.id;
-
-      // если тред ещё временный — получаем реальный
-      if (threadId.startsWith("tmp_")) {
-        const r = await fetch("/api/chat/threads/ensure", {
-          method: "POST",
-          headers: headersWithId({ "Content-Type": "application/json" }),
-          body: JSON.stringify({ otherUserId: active.peerId, otherName: active.peerName ?? null })
-        });
-        if (!r.ok) { alert("Не удалось открыть чат"); setSending(false); return; }
-        const { threadId: realId } = await r.json();
-        threadId = realId;
-
-        setActive(prev => (prev ? { ...prev, id: realId } : prev));
-        setThreads(prev => {
-          const filtered = prev.filter(t => t.id !== active.id && t.id !== realId);
-          return dedupeByPeer(uniqueById(mergeThreads(filtered, [{ ...active, id: realId }])));
-        });
-      }
-
-      // оптимистичное сообщение
-      const tempId = `tmp_${Date.now()}`;
-      const tempMsg: Message = {
-        id: tempId,
-        text,
-        createdAt: new Date().toISOString(),
-        author: { id: meIdRef.current || "me", name: me?.name ?? meIdRef.current ?? null },
-      };
-      setMessages(prev => [...prev, tempMsg]);
-      setDraft("");
-      queueMicrotask(() => endRef.current?.scrollIntoView({ block: "end" }));
-
-      const r2 = await fetch(`/api/chat/threads/${threadId}/messages`, {
-        method: "POST",
-        headers: headersWithId({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ text })
-      });
-
-      if (!r2.ok) {
-        // проверяем, не дошло ли фактически
-        await loadMessages(threadId);
-        const arrived = [...messages, tempMsg].reverse().find(m => m.author?.id === (meIdRef.current || "me") && m.text === text);
-        if (!arrived) {
-          // откатываем оптимизм и показываем ошибку
-          setMessages(prev => prev.filter(m => m.id !== tempId));
-          alert("Не удалось отправить сообщение");
-          return;
-        }
-      }
-
-      await loadMessages(threadId);
-      await reloadThreads();
-
-      fetch(`/api/chat/notify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ toUserId: active.peerId, threadId })
-      }).catch(() => {});
-    } finally {
-      setSending(false);
-    }
-  }
-
-  async function markRead(threadId: string) {
-    await fetch(`/api/chat/threads/${threadId}/read`, { method: "POST", headers: headersWithId() }).catch(() => {});
-  }
-
-  // ---------- ВЫБОР ТРЕДА — моментально снимаем «непрочитано» ----------
   function selectThread(t: ThreadListItem) {
-    if (deleting.has(t.id) || inCooldown(t.id)) return;
     setActive(t);
-
-    // моментально обнуляем счётчик локально — исчезают подсветка и бейдж, не ждём ответа сервера
-    setThreads(prev => prev.map(x => x.id === t.id ? { ...x, unreadCount: 0 } : x));
-
-    try { localStorage.setItem(lsKeys(meIdRef.current).last, t.id); } catch {}
-
+    try { localStorage.setItem(ls(meIdRef.current).last, t.id); } catch {}
+    setQ(""); setHits([]); setHitIdx(0);
+    setFiles([]);
     loadMessages(t.id);
-    fetch(`/api/chat/threads/${t.id}/read`, { method: "POST", headers: headersWithId() })
+    fetch(`/api/chat/threads/${t.id}/read`, { method: "POST", headers: headers() })
       .then(() => reloadThreads())
       .catch(() => {});
   }
 
-  // ---------- УДАЛЕНИЕ ----------
-  async function removeThread(tid: string) {
-    if (deleting.has(tid)) return;
+  async function send() {
+    if (!active || sending) return;
+    const text = draft.trim(); if (!text) return; // логику не меняем — только текст
 
-    const okConfirm = window.confirm("Удалить диалог? Сообщения будут недоступны вам.");
-    if (!okConfirm) return;
-
-    if (tid.startsWith("tmp_")) {
-      setThreads(prev => prev.filter(t => t.id !== tid));
-      if (active?.id === tid) { setActive(null); setMessages([]); }
-      startCooldown(tid, 2000);
-      return;
-    }
-
-    setDeleting(prev => new Set(prev).add(tid));
-    let snapshot: ThreadListItem[] | null = null;
-    setThreads(prev => { snapshot = prev; return prev.filter(t => t.id !== tid); });
-    if (active?.id === tid) { setActive(null); setMessages([]); }
-    startCooldown(tid, 5000);
-
+    setSending(true);
     try {
-      const resp = await fetch(`/api/chat/threads/${tid}`, { method: "DELETE", headers: headersWithId() });
-      if (!(resp.ok || resp.status === 404 || resp.status === 410)) {
-        throw new Error(`DELETE failed: ${resp.status}`);
+      const tempId = `tmp_${Date.now()}`;
+      const tempMsg: Message = {
+        id: tempId, text, createdAt: new Date().toISOString(),
+        author: { id: meIdRef.current || "me", name: (session?.user?.name as string) ?? meIdRef.current ?? null },
+      };
+      setMessages(prev => [...prev, tempMsg]);
+      setDraft("");
+      setLastFromMe(prev => ({ ...prev, [active.id]: true }));
+
+      const r = await fetch(`/api/chat/threads/${active.id}/messages`, {
+        method: "POST", headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ text })
+      }).catch(() => null);
+
+      if (!r?.ok) {
+        setMessages(prev => prev.filter(m => m.id !== tempId));
+        alert("Не удалось отправить сообщение");
+        return;
       }
-      try { localStorage.removeItem(lsKeys(meIdRef.current).last); } catch {}
+
+      await loadMessages(active.id);
       await reloadThreads();
-    } catch {
-      if (snapshot) setThreads(snapshot);
-    } finally {
-      setDeleting(prev => { const next = new Set(prev); next.delete(tid); return next; });
-    }
+    } finally { setSending(false); }
+  }
+
+  async function removeThreadHard(tid: string) {
+    const ok = window.confirm("Удалить диалог у обоих пользователей и стереть из базы?");
+    if (!ok) return;
+    const r = await fetch(`/api/chat/threads/${tid}?scope=both`, { method: "DELETE", headers: headers() }).catch(() => null);
+    if (!r?.ok) { alert("Не удалось удалить диалог"); return; }
+    if (active?.id === tid) { setActive(null); setMessages([]); }
+    await reloadThreads();
+  }
+
+  function pingTyping() {
+    const now = Date.now();
+    if (!active || now < typingCooldownRef.current) return;
+    typingCooldownRef.current = now + 1500;
+    fetch("/api/chat/typing", {
+      method: "POST", headers: headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ threadId: active.id }),
+    }).catch(() => {});
   }
 
   if (status !== "authenticated") {
@@ -541,162 +492,166 @@ async function loadMessages(threadId: string) {
   }
 
   return (
-    <section style={{ fontFamily: '"Times New Roman", serif', fontSize: 12 }}>
-      <div className="card" style={{ padding: 0 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", minHeight: 560 }}>
-          <aside style={{ borderRight: "1px solid #e5e7eb", padding: 12 }}>
-            <div style={{ color:"#374151", marginBottom: 6 }}>
-              {me ? `Вы: ${me.name ?? meIdRef.current ?? "—"}` : "…"}
-            </div>
-
+    <section style={{ fontFamily: '"Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial', fontSize: 14 }}>
+      {styles}
+      {/* звуковой элемент; положи mp3 в /public */}
+      <audio ref={audioRef} src="/pressing-a-button-with-sound.mp3" preload="auto" />
+      <div className="chat-root">
+        <aside className="threads">
+          <div style={{ padding: 12 }}>
             <div style={{ position: "relative" }}>
               <input
-                ref={searchInputRef}
-                placeholder="Поиск сотрудника"
+                ref={searchRef}
                 value={search}
-                onChange={e => { setSearchOpen(true); runSearch(e.target.value); }}
-                onFocus={() => { setSearchOpen(true); updateDdPos(); }}
-                onKeyDown={e => { if (e.key === "Escape") { setSearchOpen(false); (e.currentTarget as HTMLInputElement).blur(); } }}
+                onChange={(e) => { setSearch(e.target.value); runSearch(e.target.value); }}
+                onFocus={() => { setOpenDd(true); placeDd(); }}
+                placeholder="Поиск сотрудника"
+                style={{ width: "100%", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 10, outline: "none" }}
               />
-              {(() => {
-                const showDropdown = searchOpen && search.trim().length > 0 && (searching || found.length > 0);
-                return showDropdown && ddPos && typeof document !== "undefined" && createPortal(
-                  <div
-                    className="card"
-                    style={{
-                      position: "fixed",
-                      left: ddPos.left,
-                      top: ddPos.top,
-                      width: ddPos.width,
-                      zIndex: 10000,
-                      padding: 4,
-                      maxHeight: 260,
-                      overflowY: "auto"
-                    }}
-                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                  >
-                    {searching && <div style={{ padding: 8, color: "#6b7280" }}>Поиск…</div>}
-                    {!searching && found.length === 0 && <div style={{ padding: 8, color: "#6b7280" }}>Никого не нашли.</div>}
-                    {found.map(u => (
-                      <button
-                        key={u.id}
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); openWith(u); }}
-                        style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 10px", borderRadius:8, cursor:"pointer", background:"transparent", border:"none" }}
-                        title={u.name ?? u.id}
-                      >
-                        {u.name ?? u.id}
-                      </button>
-                    ))}
-                  </div>,
-                  document.body
-                );
-              })()}
+              {openDd && ddPos.current && (
+                <div className="dd" style={{ left: ddPos.current.left, top: ddPos.current.top, width: ddPos.current.width }}>
+                  {searching && <div style={{ padding: 12, color: "#6b7280" }}>Поиск…</div>}
+                  {!searching && found.length === 0 && <div style={{ padding: 12, color: "#6b7280" }}>Ничего не найдено</div>}
+                  {!searching && found.map(u => (
+                    <button key={u.id} className="dd-item" onClick={() => openWith(u)} title={u.email || u.id}>
+                      {u.name ?? u.email ?? u.id}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
-            <div style={{ marginTop: 8, fontWeight: 700 }}>Диалоги</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+            <div style={{ marginTop: 10, fontWeight: 700 }}>Диалоги</div>
+            <div style={{ marginTop: 6 }}>
               {threads.map(t => {
                 const isActive = active?.id === t.id;
                 const unread = (t.unreadCount ?? 0) > 0;
-                const isDel = deleting.has(t.id) || inCooldown(t.id);
+                const fromMe = lastFromMe[t.id];
+                const cls = `thread ${isActive ? "thread--active" : ""} ${unread && !isActive ? "thread--unread" : ""}`.trim();
                 return (
-                  <div key={t.id} style={{ position: "relative", opacity: isDel ? 0.6 : 1 }}>
-                    <button
-                      onClick={() => selectThread(t)}
-                      disabled={isDel}
-                      style={{
-                        width:"100%", textAlign:"left", padding:"10px 36px 10px 12px",
-                        borderRadius:12, border:"1px solid #e5e7eb",
-                        background: isActive ? "#eef2ff" : unread ? "#fff7ed" : "transparent",
-                        fontWeight: unread ? 700 : 400,
-                        cursor: isDel ? "not-allowed" : "pointer"
-                      }}>
-                      <div>{t.peerName ?? t.peerId}</div>
+                  <div key={t.id} style={{ position: "relative" }}>
+                    <button className={cls} onClick={() => selectThread(t)}>
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+                        <div style={{ fontWeight: unread ? 700 : 600 }}>{t.peerName ?? t.peerId}</div>
+                        {t.lastMessageAt && <div style={{ color:"#6b7280", fontSize:11 }}>{fmt(t.lastMessageAt)}</div>}
+                      </div>
                       {t.lastMessageText && (
-                        <div style={{ color:"#374151", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                        <div className={`thread__last ${fromMe ? "thread__last--mine" : ""}`}>
+                          {fromMe === true ? "Вы: " : ""}
                           {t.lastMessageText}
                         </div>
                       )}
-                      {t.lastMessageAt && <div style={{ color:"#6b7280", marginTop:4, fontSize:11 }}>{fmt(t.lastMessageAt)}</div>}
-                      {(t.unreadCount ?? 0) > 0 && (
-                        <span style={{
-                          position:"absolute", right:36, top:12, fontSize:11,
-                          background:"#1d4ed8", color:"#fff", padding:"0 6px", borderRadius:9999
-                        }}>{t.unreadCount}</span>
-                      )}
+                      {(t.unreadCount ?? 0) > 0 && <span className="badge">{t.unreadCount}</span>}
                     </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); if (!isDel) removeThread(t.id); }}
-                      title={isDel ? "Удаляется…" : "Удалить диалог"}
-                      disabled={isDel}
-                      style={{
-                        position:"absolute", right:6, top:6,
-                        width:22, height:22, borderRadius:6,
-                        border:"1px solid #e5e7eb", background:"#fff",
-                        cursor: isDel ? "not-allowed" : "pointer"
-                      }}
-                    >
-                      {isDel ? "…" : "×"}
-                    </button>
+                    <button className="btn-del" onClick={(e) => { e.stopPropagation(); removeThreadHard(t.id); }} title="Удалить диалог у обоих">×</button>
                   </div>
                 );
               })}
               {!threads.length && <div style={{ color:"#6b7280", padding:8 }}>Пока нет диалогов. Найдите сотрудника выше, чтобы начать.</div>}
             </div>
-          </aside>
+          </div>
+        </aside>
 
-          <section style={{ display:"grid", gridTemplateRows:"auto 1fr auto", minHeight:560 }}>
-            <div style={{ padding:12, borderBottom:"1px solid #e5e7eb", fontWeight:700 }}>
-              {active ? (active.peerName ?? active.peerId) : "Выберите собеседника"}
-              {peerTyping && <span style={{ marginLeft:8, fontWeight:400, color:"#6b7280" }}>печатает…</span>}
+        <section className="pane">
+          <div className="pane-header">
+            <div className="pane-title">{active ? (active.peerName ?? active.peerId) : "Выберите собеседника"}</div>
+
+            {/* поиск по диалогу */}
+            <div className="pane-search" title="Поиск по диалогу">
+              <input
+                value={q}
+                placeholder="поиск"
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && hits.length) {
+                    const next = (hitIdx + 1) % hits.length;
+                    setHitIdx(next);
+                    scrollToMsg(hits[next]);
+                  }
+                }}
+              />
+              <small>{hits.length ? `${hitIdx + 1}/${hits.length}` : ""}</small>
+              {q && <button onClick={() => { setQ(""); setHits([]); setHitIdx(0); }} title="Очистить">✕</button>}
             </div>
 
-            <div style={{ padding:12, overflowY:"auto" }}>
-              {!active && <div style={{ color:"#6b7280" }}>Нет сообщений</div>}
-              {active && messages.map(m => {
-                const mine = m.author?.id === meIdRef.current;
-                const read = mine && peerReadAt ? Date.parse(peerReadAt) >= Date.parse(m.createdAt) : false;
-                const ticks = mine ? (read ? "✓✓" : "✓") : "";
-                return (
-                  <div key={m.id} style={{ marginBottom:10, display:"flex", flexDirection:"column" }}>
-                    <div style={{ fontWeight:700 }}>
-                      {m.author?.name ?? m.author?.id ?? "—"}
-                      <span style={{ color:"#6b7280", fontWeight:400 }}> · {fmt(m.createdAt)}</span>
-                      {mine && <span style={{ marginLeft:8, color:"#374151" }}>{ticks}</span>}
+            {peerTyping && <div className="pane-typing">печатает…</div>}
+          </div>
+
+          <div className="pane-body" id="chat-scroll-area" ref={paneRef}>
+            {!active && <div style={{ color:"#6b7280" }}>Нет сообщений</div>}
+            {active && messages.map(m => {
+              const mine = m.author?.id === meIdRef.current;
+              const read = mine && peerReadAt ? Date.parse(peerReadAt) >= Date.parse(m.createdAt) : false;
+              const ticks = mine ? (read ? "✓✓" : "✓") : "";
+              const hasHit = q.trim() && (m.text || "").toLocaleLowerCase("ru-RU").includes(q.toLocaleLowerCase("ru-RU"));
+              return (
+                <div
+                  key={m.id}
+                  ref={(el) => { msgRefs.current[m.id] = el; }}  // callback ref: void
+                  className={`msgRow ${mine ? "mine" : ""}`}
+                  style={hasHit ? { outline: "2px solid #fde68a", borderRadius: 12 } : undefined}
+                >
+                  <div className="msgCard">
+                    <div className="msgHead">
+                      {!mine && <div>{m.author?.name ?? m.author?.id ?? "—"}</div>}
+                      <div className="msgMeta">{fmt(m.createdAt)}</div>
+                      {mine && <>
+                        <div className="msgMeta" style={{ marginLeft:4 }}>{ticks}</div>
+                        <div style={{ fontWeight:700 }}>{m.author?.name ?? m.author?.id ?? "—"}</div>
+                      </>}
                     </div>
-                    <div style={{ whiteSpace:"pre-wrap", wordBreak:"break-word" }}>{m.text}</div>
-                    <div style={{ borderTop:"1px solid #e5e7eb", marginTop:8 }} />
+                    <div className="msgText">{hl(m.text)}</div>
+                    <div className="msgSep" />
                   </div>
-                );
-              })}
-              {active && (() => {
-                const lastMine = [...messages].reverse().find(m => m.author?.id === meIdRef.current);
-                const seen = lastMine && peerReadAt ? Date.parse(peerReadAt) >= Date.parse(lastMine.createdAt) : false;
-                return lastMine ? (
-                  <div style={{ color:"#6b7280", fontSize:11, marginTop:6 }}>
-                    {seen ? `Просмотрено: ${fmt(peerReadAt!)}` : "Отправлено"}
-                  </div>
-                ) : null;
-              })()}
-              <div ref={endRef} />
-            </div>
+                </div>
+              );
+            })}
+            {/* статус ТОЛЬКО под последним моим сообщением */}
+            {active && (() => {
+              const lastMine = [...messages].reverse().find(m => m.author?.id === meIdRef.current);
+              const seen = lastMine && peerReadAt ? Date.parse(peerReadAt) >= Date.parse(lastMine.createdAt) : false;
+              return lastMine ? (
+                <div style={{ color:"#6b7280", fontSize:11, marginTop:6, textAlign:"right" }}>
+                  {seen ? "Прочитано" : "Отправлено"}
+                </div>
+              ) : null;
+            })()}
+            <div ref={bottomRef} />
+          </div>
 
-            <div style={{ borderTop:"1px solid #e5e7eb", padding:12, display:"flex", gap:8 }}>
+          <div className="pane-footer">
+            {/* плюсик — добавление файлов (UI) */}
+            <button className="plusBtn" onClick={() => fileInputRef.current?.click()} title="Добавить файлы">+</button>
+            <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => {
+              const list = Array.from(e.target.files || []);
+              setFiles(prev => [...prev, ...list]);
+              e.currentTarget.value = "";
+            }} />
+            <div style={{ flex:1, display:"flex", flexDirection:"column" }}>
               <textarea
-                placeholder="Напишите сообщение…"
+                placeholder={active ? "Напишите сообщение…" : "Сначала выберите собеседника"}
                 value={draft}
                 onChange={e => { setDraft(e.target.value); pingTyping(); }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else pingTyping(); }}
-                style={{ flex:1, height:64, resize:"vertical" }}
+                style={{ flex:1, height:64, resize:"vertical", padding:"10px 12px", border:"1px solid #e5e7eb", borderRadius:10, outline:"none" }}
                 disabled={!active}
               />
-              <button className="btn-primary" onClick={send} disabled={!active || !draft.trim() || sending}>
-                {sending ? "Отправка…" : "Отправить"}
-              </button>
+              {!!files.length && (
+                <div>
+                  {files.map((f, i) => (
+                    <span key={i} className="fileChip">
+                      {f.name}
+                      <button onClick={() => setFiles(prev => prev.filter((_, idx) => idx !== i))} aria-label="Убрать файл">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
-          </section>
-        </div>
+            <button onClick={send} disabled={!active || !draft.trim() || sending} className="sendBtn">
+              {sending ? "Отправка…" : "Отправить"}
+            </button>
+          </div>
+        </section>
       </div>
     </section>
   );

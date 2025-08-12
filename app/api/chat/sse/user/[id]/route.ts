@@ -1,39 +1,27 @@
-// гарантируем нодовый рантайм и отсутствие кеша
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// app/api/chat/sse/user/[id]/route.ts
+import type { NextRequest } from "next/server";
+import { subscribeUser, unsubscribeUser } from "../../../_bus";
 
-import { NextRequest } from "next/server";
-import { subscribeUser } from "../../../_bus";
+export const runtime = "nodejs";
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
-  const uid = params.id;
-  let closed = false;
-  let ping: ReturnType<typeof setInterval> | null = null;
-  let unsubscribe: (() => void) | null = null;
+  const userId = params.id;
 
   const stream = new ReadableStream({
     start(controller) {
-      const send = (data: any) => {
-        if (closed) return;
-        try {
-          controller.enqueue(`event: push\ndata: ${JSON.stringify(data)}\n\n`);
-        } catch { /* no-op */ }
+      subscribeUser(userId, controller);
+      try {
+        controller.enqueue(`event: push\ndata: ${JSON.stringify({ type: "hello", at: Date.now() })}\n\n`);
+      } catch {}
+      const ping = setInterval(() => {
+        try { controller.enqueue(`: ping\n\n`); } catch { clearInterval(ping); }
+      }, 25000);
+      // @ts-ignore
+      controller._onclose = () => {
+        clearInterval(ping);
+        unsubscribeUser(userId, controller);
+        try { controller.close(); } catch {}
       };
-
-      unsubscribe = subscribeUser(uid, send);
-
-      try { controller.enqueue(`: hello ${uid}\n\n`); } catch {}
-      ping = setInterval(() => {
-        if (closed) return;
-        try { controller.enqueue(`: ping\n\n`); } catch {}
-      }, 25_000);
-    },
-
-    // ВАЖНО: именно здесь чистим всё при разрыве соединения
-    cancel() {
-      closed = true;
-      try { if (ping) clearInterval(ping); } catch {}
-      try { unsubscribe?.(); } catch {}
     },
   });
 

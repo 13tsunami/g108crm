@@ -1,66 +1,86 @@
 // components/ChatUnreadIndicator.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSession } from "next-auth/react";
 
-export default function ChatUnreadIndicator({
-  asText = false,
-}: { asText?: boolean }) {
-  const [count, setCount] = useState<number>(0);
+type ThreadListItem = {
+  id: string;
+  unreadCount?: number | null;
+};
 
-  async function load() {
+type Props = {
+  /** нарисовать просто текстовый бейдж (в сайдбаре он inline) */
+  asText?: boolean;
+  /** если передать — компонент не делает fetch, просто рисует число */
+  count?: number | null;
+};
+
+export default function ChatUnreadIndicator({ asText, count: externalCount }: Props) {
+  const { data: session, status } = useSession();
+  const [count, setCount] = useState<number>(externalCount ?? 0);
+  const uid = useMemo(() => (session?.user as any)?.id as string | undefined, [session?.user]);
+
+  async function refresh() {
+    if (!uid) { setCount(0); return; }
     try {
-      const r = await fetch("/api/chat/unread-count", { cache: "no-store" });
-      const { count } = await r.json();
-      setCount(count ?? 0);
-    } catch {}
+      const r = await fetch("/api/chat/threads/list", {
+        cache: "no-store",
+        headers: { "X-User-Id": uid },
+      }).catch(() => null);
+      if (!r?.ok) return;
+      const list = (await r.json()) as ThreadListItem[];
+      const total = (list || []).reduce((acc, t) => acc + (t.unreadCount ?? 0), 0);
+      setCount(total);
+    } catch {
+      /* no-op */
+    }
   }
 
   useEffect(() => {
-    load();
-    const es = new EventSource("/api/realtime");
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data?.type?.startsWith("chat:")) {
-          // любое чат-событие — обновим счётчик
-          load();
-        }
-      } catch {}
-    };
-    const vis = () => document.visibilityState === "visible" && load();
-    document.addEventListener("visibilitychange", vis);
-    const t = setInterval(load, 60_000);
+    if (typeof externalCount === "number") { setCount(externalCount); return; }
+    if (status !== "authenticated") { setCount(0); return; }
+    refresh();
+
+    const onThreadsUpdated = () => refresh();
+    const onSsePush = () => refresh();
+    const onVis = () => { if (document.visibilityState === "visible") refresh(); };
+
+    window.addEventListener("g108:chat-threads-updated", onThreadsUpdated as any);
+    window.addEventListener("g108:sse-push", onSsePush as any);
+    window.addEventListener("visibilitychange", onVis);
+
     return () => {
-      es.close();
-      document.removeEventListener("visibilitychange", vis);
-      clearInterval(t);
+      window.removeEventListener("g108:chat-threads-updated", onThreadsUpdated as any);
+      window.removeEventListener("g108:sse-push", onSsePush as any);
+      window.removeEventListener("visibilitychange", onVis);
     };
-  }, []);
+  }, [status, uid, externalCount]);
 
-  if (!count) return null;
+  if (!count || count <= 0) {
+    return asText ? <span aria-hidden="true" style={{ marginLeft: 8 }} /> : null;
+  }
 
-  // вариант «как текст»: " (3)"
-  if (asText) return <span>&nbsp;({count})</span>;
-
-  // компактный бейдж
-  return (
-    <span
-      aria-label={`${count} непрочитанных`}
-      style={{
-        display: "inline-block",
-        minWidth: 16,
-        padding: "0 6px",
-        borderRadius: 999,
-        background: "#ef4444",
-        color: "#fff",
-        fontSize: 11,
-        lineHeight: "18px",
-        textAlign: "center",
-        marginLeft: 6,
-      }}
-    >
+  const badge =
+    <span className="chat-badge" aria-label={`Непрочитанных сообщений: ${count}`}>
       {count}
-    </span>
-  );
+      <style jsx>{`
+        .chat-badge {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 18px;
+          height: 18px;
+          padding: 0 6px;
+          border-radius: 9999px;
+          font-size: 11px;
+          line-height: 1;
+          background: #1d4ed8;
+          color: #fff;
+          margin-left: 8px;
+        }
+      `}</style>
+    </span>;
+
+  return badge;
 }

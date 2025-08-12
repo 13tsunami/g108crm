@@ -1,42 +1,40 @@
 // app/api/chat/threads/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { pushThreadUpdated } from "../../_bus";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
+import { pushThreadDeleted, pushThreadUpdated } from "../../_bus";
 const prisma = new PrismaClient();
 
-// минимальная утилита userId
-function getUserId(req: NextRequest): string | null {
-  const h = req.headers.get("x-user-id");
-  if (h && h.trim()) return h.trim();
-  const cookie = req.headers.get("cookie") || "";
-  const m = cookie.match(/(?:^|;\s*)uid=([^;]+)/i);
-  if (m) { try { return decodeURIComponent(m[1]); } catch {} }
-  return null;
+function uid(req: NextRequest) {
+  const v = req.headers.get("x-user-id");
+  if (!v) throw new Error("Unauthorized");
+  return String(v);
 }
 
-// GET — отдать тред и сообщения после clearedAt (как делали ранее)
-// (можешь оставить свой GET, если уже ок)
+export async function DELETE(req: NextRequest, ctx: { params: { id: string } }) {
+  try {
+    const userId = uid(req);
+    const threadId = ctx.params.id;
 
-export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
-  const uid = getUserId(req);
-  if (!uid) return new NextResponse(null, { status: 401 });
+    const t = await prisma.thread.findUnique({ where: { id: threadId } });
+    if (!t) return NextResponse.json({ error: "Thread not found" }, { status: 404 });
+    if (t.aId !== userId && t.bId !== userId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  // soft-delete для конкретного пользователя + обрезаем историю с текущего момента
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO "ChatState"(threadId,userId,hiddenAt,clearedAt)
-     VALUES(?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-     ON CONFLICT(threadId,userId) DO UPDATE
-     SET hiddenAt=CURRENT_TIMESTAMP, clearedAt=CURRENT_TIMESTAMP;`,
-    params.id, uid
-  );
+    // удаляем все сущности этого треда
+    await prisma.$transaction([
+      prisma.message.deleteMany({ where: { threadId } }),
+      prisma.chatRead.deleteMany({ where: { threadId } }),
+      prisma.thread.delete({ where: { id: threadId } }),
+    ]);
 
-  // обновить списки/бейджи у этого пользователя
-  pushThreadUpdated([uid]);
+    // пуш обоим участникам
+    pushThreadDeleted(t.aId, threadId);
+    pushThreadDeleted(t.bId, threadId);
+    // на всякий — и updated (если фронт подписан только на него)
+    pushThreadUpdated(t.aId, threadId);
+    pushThreadUpdated(t.bId, threadId);
 
-  // правильный ответ для DELETE
-  return new NextResponse(null, { status: 204 });
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+  }
 }

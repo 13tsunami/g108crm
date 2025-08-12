@@ -1,37 +1,50 @@
-type SendFn = (evt: any) => void;
-type SubMap = Map<string, Set<SendFn>>;
+// app/api/chat/_bus.ts
+export type PushEvent =
+  | { type: "hello"; at: number }
+  | { type: "message"; threadId: string; data: any }
+  | { type: "thread-updated"; threadId?: string }
+  | { type: "thread-deleted"; threadId: string }
+  | { type: "typing"; threadId: string };
+
+type Controller = ReadableStreamDefaultController;
 
 const g = globalThis as any;
-if (!g.__chat_bus) {
-  g.__chat_bus = { subs: new Map() as SubMap };
-}
-const bus: { subs: SubMap } = g.__chat_bus;
+if (!g.__CHAT_BUS__) g.__CHAT_BUS__ = new Map<string, Set<Controller>>();
+const BUS: Map<string, Set<Controller>> = g.__CHAT_BUS__;
 
-export function subscribeUser(userId: string, send: SendFn) {
-  if (!bus.subs.has(userId)) bus.subs.set(userId, new Set());
-  bus.subs.get(userId)!.add(send);
-  return () => bus.subs.get(userId)?.delete(send);
+export function subscribeUser(userId: string, controller: Controller): void {
+  if (!BUS.has(userId)) BUS.set(userId, new Set<Controller>());
+  BUS.get(userId)!.add(controller);
 }
-
-export function pushToUser(userId: string, payload: any) {
-  const set = bus.subs.get(userId);
+export function unsubscribeUser(userId: string, controller: Controller): void {
+  const set = BUS.get(userId);
   if (!set) return;
-  for (const s of Array.from(set)) {
-    try { s(payload); } catch {}
+  set.delete(controller);
+  if (set.size === 0) BUS.delete(userId);
+}
+
+export function pushToUser(userId: string, payload: PushEvent): void {
+  const set = BUS.get(userId);
+  if (!set) return;
+  const line = `event: push\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const ctrl of set) {
+    try { ctrl.enqueue(line); } catch {}
   }
 }
 
-export function pushToMany(userIds: string[], payload: any) {
-  for (const id of userIds) pushToUser(id, payload);
+export function pushTyping(userIds: string | string[], threadId: string): void {
+  const ids = Array.isArray(userIds) ? userIds : [userIds];
+  for (const uid of ids) pushToUser(uid, { type: "typing", threadId });
 }
-
-// Удобные шорткаты под типы событий, которые слушает страница
-export function pushThreadUpdated(to: string[]) {
-  pushToMany(to, { type: "thread-updated" });
+export function pushThreadUpdated(userId: string, threadId?: string): void {
+  pushToUser(userId, threadId ? { type: "thread-updated", threadId } : { type: "thread-updated" });
 }
-export function pushMessage(to: string[], threadId: string, data: any) {
-  pushToMany(to, { type: "message", threadId, data });
+export function pushThreadDeleted(userId: string, threadId: string): void {
+  pushToUser(userId, { type: "thread-deleted", threadId });
 }
-export function pushTyping(to: string[], threadId: string) {
-  pushToMany(to, { type: "typing", threadId });
+export function pushMessage(userId: string, threadId: string, data: any): void {
+  pushToUser(userId, { type: "message", threadId, data });
+}
+export function pushToMany(userIds: string[], payload: PushEvent): void {
+  for (const uid of userIds) pushToUser(uid, payload);
 }

@@ -1,55 +1,60 @@
+// app/api/chat/threads/[id]/read/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { pushThreadUpdated } from "../../../_bus";
 const prisma = new PrismaClient();
 
-function getUserId(req: NextRequest) {
-  const h = req.headers.get("x-user-id"); if (h) return h;
-  const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)uid=([^;]+)/i);
-  return m ? decodeURIComponent(m[1]) : null;
+function uid(req: NextRequest) {
+  const v = req.headers.get("x-user-id");
+  if (!v) throw new Error("Unauthorized");
+  return String(v);
 }
 
-async function getReadPair(threadId: string, uid: string) {
-  const t = await prisma.thread.findUnique({ where: { id: threadId } }) as any;
-  if (!t) return { myReadAt: null, peerReadAt: null };
-  const peerId = t.aId === uid ? t.bId : t.bId === uid ? t.aId : null;
+export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
+  try {
+    const userId = uid(req);
+    const threadId = ctx.params.id;
 
-  const my = await prisma.chatRead.findUnique({
-    where: { threadId_userId: { threadId, userId: uid } },
-  });
-  const peer = peerId
-    ? await prisma.chatRead.findUnique({
-        where: { threadId_userId: { threadId, userId: peerId } },
-      })
-    : null;
+    const t = await prisma.thread.findUnique({ where: { id: threadId } });
+    if (!t) return NextResponse.json({ error: "Thread not found" }, { status: 404 });
+    if (t.aId !== userId && t.bId !== userId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  return {
-    myReadAt: my?.lastReadAt ? my.lastReadAt.toISOString() : null,
-    peerReadAt: peer?.lastReadAt ? peer.lastReadAt.toISOString() : null,
-  };
+    const me = await prisma.chatRead.findUnique({ where: { threadId_userId: { threadId, userId } } });
+    const otherId = t.aId === userId ? t.bId : t.aId;
+    const peer = await prisma.chatRead.findUnique({ where: { threadId_userId: { threadId, userId: otherId } } });
+
+    return NextResponse.json({
+      myReadAt: me?.lastReadAt ? me.lastReadAt.toISOString() : null,
+      peerReadAt: peer?.lastReadAt ? peer.lastReadAt.toISOString() : null,
+    });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+  }
 }
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const uid = getUserId(req);
-  if (!uid) return NextResponse.json({ myReadAt: null, peerReadAt: null });
-  const res = await getReadPair(params.id, uid);
-  return NextResponse.json(res);
-}
+export async function POST(req: NextRequest, ctx: { params: { id: string } }) {
+  try {
+    const userId = uid(req);
+    const threadId = ctx.params.id;
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const uid = getUserId(req);
-  if (!uid) return NextResponse.json({ ok: false }, { status: 401 });
+    const t = await prisma.thread.findUnique({ where: { id: threadId } });
+    if (!t) return NextResponse.json({ error: "Thread not found" }, { status: 404 });
+    if (t.aId !== userId && t.bId !== userId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  await prisma.chatRead.upsert({
-    where: { threadId_userId: { threadId: params.id, userId: uid } },
-    create: { threadId: params.id, userId: uid, lastReadAt: new Date() },
-    update: { lastReadAt: new Date() },
-  });
+    const now = new Date();
+    await prisma.chatRead.upsert({
+      where: { threadId_userId: { threadId, userId } },
+      update: { lastReadAt: now },
+      create: { threadId, userId, lastReadAt: now },
+    });
 
-  // уведомим обоих — списки/бейджи обновятся
-  const t = await prisma.thread.findUnique({ where: { id: params.id } }) as any;
-  if (t?.aId && t?.bId) pushThreadUpdated([t.aId, t.bId]);
+    // обновим списки у обоих
+    const otherId = t.aId === userId ? t.bId : t.aId;
+    pushThreadUpdated(userId, threadId);
+    pushThreadUpdated(otherId, threadId);
 
-  const res = await getReadPair(params.id, uid);
-  return NextResponse.json(res);
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+  }
 }

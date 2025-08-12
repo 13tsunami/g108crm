@@ -1,75 +1,60 @@
+// app/api/chat/threads/list/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
-function getUserId(req: NextRequest) {
-  const h = req.headers.get("x-user-id"); if (h) return h;
-  const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)uid=([^;]+)/i);
-  return m ? decodeURIComponent(m[1]) : null;
+function uid(req: NextRequest) {
+  const v = req.headers.get("x-user-id");
+  if (!v) throw new Error("Unauthorized");
+  return String(v);
 }
 
 export async function GET(req: NextRequest) {
-  const uid = getUserId(req);
-  if (!uid) return NextResponse.json([]);
+  try {
+    const userId = uid(req);
 
-  const rows = await prisma.$queryRawUnsafe<any[]>(
-    `
-    SELECT
-      t.id,
-      CASE WHEN t.aId = ? THEN t.bId ELSE t.aId END AS peerId,
-      (SELECT name FROM "User" u WHERE u.id = CASE WHEN t.aId = ? THEN t.bId ELSE t.aId END) AS peerName,
-      -- pulled clearedAt for current user (may be NULL)
-      (SELECT cs.clearedAt FROM "ChatState" cs WHERE cs.threadId = t.id AND cs.userId = ? LIMIT 1) AS clearedAt,
+    const threads = await prisma.thread.findMany({
+      where: { OR: [{ aId: userId }, { bId: userId }] },
+      include: {
+        a: { select: { id: true, name: true } },
+        b: { select: { id: true, name: true } },
+      },
+      orderBy: [{ lastMessageAt: "desc" }, { id: "desc" }],
+    });
 
-      -- last visible text/time AFTER clearedAt
-      (SELECT m2.text
-         FROM "Message" m2
-        WHERE m2.threadId = t.id AND m2.createdAt > COALESCE(
-              (SELECT cs.clearedAt FROM "ChatState" cs WHERE cs.threadId = t.id AND cs.userId = ? LIMIT 1), 0)
-        ORDER BY m2.createdAt DESC
-        LIMIT 1) AS lastMessageText,
+    const ids = threads.map(t => t.id);
+    const reads = await prisma.chatRead.findMany({
+      where: { userId, threadId: { in: ids.length ? ids : ["_"] } },
+      select: { threadId: true, lastReadAt: true },
+    });
+    const readMap = new Map(reads.map(r => [r.threadId, r.lastReadAt]));
 
-      (SELECT m2.createdAt
-         FROM "Message" m2
-        WHERE m2.threadId = t.id AND m2.createdAt > COALESCE(
-              (SELECT cs.clearedAt FROM "ChatState" cs WHERE cs.threadId = t.id AND cs.userId = ? LIMIT 1), 0)
-        ORDER BY m2.createdAt DESC
-        LIMIT 1) AS lastMessageAt,
+    // считаем непрочитанные: сообщения от собеседника новее моего lastReadAt
+    const result = await Promise.all(threads.map(async (t) => {
+      const peerId = t.aId === userId ? t.bId : t.aId;
+      const peerName = t.aId === userId ? t.b.name : t.a.name;
+      const lastReadAt = readMap.get(t.id) ?? new Date(0);
 
-      -- unread AFTER both lastReadAt and clearedAt
-      (SELECT COUNT(1)
-         FROM "Message" m
-        WHERE m.threadId = t.id
-          AND m.authorId <> ?
-          AND m.createdAt > COALESCE(
-                (SELECT r2.lastReadAt FROM "ChatRead" r2 WHERE r2.threadId = t.id AND r2.userId = ?), 0)
-          AND m.createdAt > COALESCE(
-                (SELECT cs.clearedAt   FROM "ChatState" cs WHERE cs.threadId = t.id AND cs.userId = ?), 0)
-      ) AS unreadCount
+      const unreadCount = await prisma.message.count({
+        where: {
+          threadId: t.id,
+          createdAt: { gt: lastReadAt },
+          authorId: { not: userId },
+        },
+      });
 
-    FROM "Thread" t
-    WHERE (t.aId = ? OR t.bId = ?)
-      AND NOT EXISTS (
-        SELECT 1 FROM "ChatState" csx
-        WHERE csx.threadId = t.id AND csx.userId = ? AND csx.hiddenAt IS NOT NULL
-      )
-    ORDER BY (lastMessageAt IS NULL), lastMessageAt DESC, t.id DESC;
-    `,
-    uid, uid,        // peer
-    uid, uid, uid,   // clearedAt + lastMessage filters
-    uid, uid, uid,   // unread filters
-    uid, uid,        // participation
-    uid              // NOT EXISTS(hidden)
-  );
+      return {
+        id: t.id,
+        peerId,
+        peerName,
+        lastMessageText: t.lastMessageText,
+        lastMessageAt: t.lastMessageAt,
+        unreadCount,
+      };
+    }));
 
-  return NextResponse.json(
-    rows.map(r => ({
-      id: r.id,
-      peerId: r.peerId,
-      peerName: r.peerName ?? null,
-      lastMessageText: r.lastMessageText ?? null,
-      lastMessageAt: r.lastMessageAt ? new Date(r.lastMessageAt).toISOString() : null,
-      unreadCount: Number(r.unreadCount || 0),
-    }))
-  );
+    return NextResponse.json(result);
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+  }
 }
