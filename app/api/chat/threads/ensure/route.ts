@@ -1,30 +1,39 @@
-// app/api/chat/threads/ensure/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { getMe, pairKey } from "../../_utils";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const prisma = new PrismaClient();
 
+function getUserId(req: NextRequest) {
+  const h = req.headers.get("x-user-id"); if (h) return h;
+  const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)uid=([^;]+)/i);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 export async function POST(req: NextRequest) {
-  const { otherUserId } = await req.json();
-  if (!otherUserId || typeof otherUserId !== "string") {
-    return NextResponse.json({ error: "otherUserId is required" }, { status: 400 });
+  const uid = getUserId(req);
+  if (!uid) return NextResponse.json({ ok: false }, { status: 401 });
+
+  const { otherUserId } = await req.json().catch(() => ({}));
+  if (!otherUserId || otherUserId === uid) {
+    return NextResponse.json({ ok: false }, { status: 400 });
   }
 
-  const me = await getMe(prisma, req);
-  if (!me) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  if (otherUserId === me.id) return NextResponse.json({ error: "cannot chat with self" }, { status: 400 });
+  const [aId, bId] = [uid, otherUserId].sort();
+  const th = await prisma.thread.upsert({
+    where: { aId_bId: { aId, bId } } as any,
+    create: { aId, bId, title: "" } as any,
+    update: {},
+    select: { id: true },
+  });
 
-  const other = await prisma.user.findUnique({ where: { id: otherUserId }, select: { id: true } });
-  if (!other) return NextResponse.json({ error: "other user not found" }, { status: 404 });
+  // раскрываем и ставим/обновляем барьер: clearedAt = MAX(existing, now)
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO "ChatState"(threadId,userId,hiddenAt,clearedAt)
+     VALUES(?, ?, NULL, CURRENT_TIMESTAMP)
+     ON CONFLICT(threadId,userId) DO UPDATE
+     SET hiddenAt=NULL,
+         clearedAt=MAX(COALESCE("ChatState".clearedAt, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP);`,
+    th.id, uid
+  );
 
-  const title = pairKey(me.id, otherUserId);
-  const existing = await prisma.thread.findFirst({ where: { title }, select: { id: true } });
-  if (existing) return NextResponse.json({ threadId: existing.id });
-
-  const created = await prisma.thread.create({ data: { title } });
-  return NextResponse.json({ threadId: created.id }, { status: 201 });
+  return NextResponse.json({ threadId: th.id });
 }

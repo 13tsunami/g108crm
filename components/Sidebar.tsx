@@ -4,6 +4,8 @@
 import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
 import { usePathname } from "next/navigation";
+import ChatUnreadIndicator from "@/components/ChatUnreadIndicator";
+import ChatWrap from "@/components/ChatWrap";
 
 const ROLE_RU: Record<string, string> = {
   admin: "Администратор",
@@ -47,7 +49,13 @@ export default function Sidebar() {
         <nav>
           <ul className="nav">
             <li><Link href="/dashboard" aria-current={pathname==="/dashboard"}>Основное</Link></li>
-            <li><Link href="/chat" aria-current={pathname==="/chat"}>Чаты</Link></li>
+            <li>
+              <Link href="/chat" aria-current={pathname==="/chat"}>
+                Чаты
+                {/* бейдж непрочитанных, не ломает верстку */}
+                <ChatUnreadIndicator asText />
+              </Link>
+            </li>
             <li><Link href="/inboxTasks" aria-current={pathname==="/inboxTasks"}>Задачи</Link></li>
             <li><Link href="/calendar" aria-current={pathname==="/calendar"}>Календарь</Link></li>
             <li><Link href="/schedule" aria-current={pathname==="/schedule"}>Расписание</Link></li>
@@ -71,6 +79,9 @@ export default function Sidebar() {
           </Link>
         )}
       </div>
+
+      {/* единая подписка на чат-события для автorefresh по всему приложению */}
+      <ChatWrap />
     </div>
   );
 }

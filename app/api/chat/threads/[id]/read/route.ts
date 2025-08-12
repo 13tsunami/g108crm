@@ -1,46 +1,55 @@
-// app/api/chat/threads/[id]/read/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { publishRead } from "@/lib/chatSSE";
-import { getMe, parsePeer } from "../../../_utils";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
+import { pushThreadUpdated } from "../../../_bus";
 const prisma = new PrismaClient();
 
-export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
-  const me = await getMe(prisma, req);
-  if (!me) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-
-  const { id } = ctx.params;
-  const thread = await prisma.thread.findUnique({ where: { id }, select: { title: true } });
-  if (!thread) return NextResponse.json({ error: "not found" }, { status: 404 });
-  const peerId = parsePeer(thread.title, me.id);
-  if (!peerId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-
-  const my = await prisma.chatRead.findUnique({ where: { threadId_userId: { threadId: id, userId: me.id } } });
-  const peer = await prisma.chatRead.findUnique({ where: { threadId_userId: { threadId: id, userId: peerId } } });
-
-  return NextResponse.json({
-    myReadAt: my?.lastReadAt?.toISOString?.() ?? null,
-    peerReadAt: peer?.lastReadAt?.toISOString?.() ?? null
-  });
+function getUserId(req: NextRequest) {
+  const h = req.headers.get("x-user-id"); if (h) return h;
+  const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)uid=([^;]+)/i);
+  return m ? decodeURIComponent(m[1]) : null;
 }
 
-export async function POST(req: NextRequest, ctx: { params: { id: string } }) {
-  const me = await getMe(prisma, req);
-  if (!me) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+async function getReadPair(threadId: string, uid: string) {
+  const t = await prisma.thread.findUnique({ where: { id: threadId } }) as any;
+  if (!t) return { myReadAt: null, peerReadAt: null };
+  const peerId = t.aId === uid ? t.bId : t.bId === uid ? t.aId : null;
 
-  const { id } = ctx.params;
+  const my = await prisma.chatRead.findUnique({
+    where: { threadId_userId: { threadId, userId: uid } },
+  });
+  const peer = peerId
+    ? await prisma.chatRead.findUnique({
+        where: { threadId_userId: { threadId, userId: peerId } },
+      })
+    : null;
 
-  const saved = await prisma.chatRead.upsert({
-    where: { threadId_userId: { threadId: id, userId: me.id } },
+  return {
+    myReadAt: my?.lastReadAt ? my.lastReadAt.toISOString() : null,
+    peerReadAt: peer?.lastReadAt ? peer.lastReadAt.toISOString() : null,
+  };
+}
+
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  const uid = getUserId(req);
+  if (!uid) return NextResponse.json({ myReadAt: null, peerReadAt: null });
+  const res = await getReadPair(params.id, uid);
+  return NextResponse.json(res);
+}
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  const uid = getUserId(req);
+  if (!uid) return NextResponse.json({ ok: false }, { status: 401 });
+
+  await prisma.chatRead.upsert({
+    where: { threadId_userId: { threadId: params.id, userId: uid } },
+    create: { threadId: params.id, userId: uid, lastReadAt: new Date() },
     update: { lastReadAt: new Date() },
-    create: { threadId: id, userId: me.id }
   });
 
-  publishRead(id, { userId: me.id, readAt: saved.lastReadAt.toISOString() });
+  // уведомим обоих — списки/бейджи обновятся
+  const t = await prisma.thread.findUnique({ where: { id: params.id } }) as any;
+  if (t?.aId && t?.bId) pushThreadUpdated([t.aId, t.bId]);
 
-  return NextResponse.json({ ok: true });
+  const res = await getReadPair(params.id, uid);
+  return NextResponse.json(res);
 }

@@ -1,48 +1,87 @@
-// app/api/chat/threads/[id]/messages/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { publishMessage } from "@/lib/chatSSE";
-import { getMe } from "../../../_utils";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
+import { pushMessage, pushThreadUpdated } from "../../../_bus";
 const prisma = new PrismaClient();
 
-export async function GET(_: NextRequest, ctx: { params: { id: string } }) {
-  const { id } = ctx.params;
-  const items = await prisma.message.findMany({
-    where: { threadId: id },
-    orderBy: { createdAt: "asc" },
-    include: { author: { select: { id: true, name: true } } }
-  });
-  const data = items.map(m => ({
-    id: m.id,
-    text: m.text,
-    createdAt: m.createdAt.toISOString(),
-    author: { id: m.author?.id ?? "", name: m.author?.name ?? null }
-  }));
-  return NextResponse.json(data);
+function getUserId(req: NextRequest) {
+  const h = req.headers.get("x-user-id"); if (h) return h;
+  const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)uid=([^;]+)/i);
+  return m ? decodeURIComponent(m[1]) : null;
 }
 
-export async function POST(req: NextRequest, ctx: { params: { id: string } }) {
-  const me = await getMe(prisma, req);
-  if (!me) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+async function getClearedAt(threadId: string, userId: string) {
+  const row = await prisma.$queryRawUnsafe<{ clearedAt: string | null }[]>(
+    `SELECT clearedAt FROM "ChatState" WHERE threadId = ? AND userId = ? LIMIT 1;`,
+    threadId, userId
+  );
+  return row?.[0]?.clearedAt ? new Date(row[0].clearedAt) : new Date(0);
+}
 
-  const { id } = ctx.params;
-  const { text } = await req.json() as { text?: string };
-  if (!text || !text.trim()) return NextResponse.json({ error: "text is required" }, { status: 400 });
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  const uid = getUserId(req);
+  const since = uid ? await getClearedAt(params.id, uid) : new Date(0);
 
-  const created = await prisma.message.create({
-    data: { text: text.trim(), authorId: me.id, threadId: id }
+  const msgs = await prisma.message.findMany({
+    where: { threadId: params.id, createdAt: { gt: since } },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, text: true, createdAt: true, author: { select: { id: true, name: true } } },
   });
 
-  publishMessage(id, {
-    id: created.id,
-    text: created.text,
-    createdAt: created.createdAt.toISOString(),
-    author: { id: me.id, name: me.name ?? null }
+  return NextResponse.json(
+    msgs.map(m => ({
+      id: m.id,
+      text: m.text,
+      createdAt: m.createdAt.toISOString(),
+      author: { id: m.author.id, name: m.author.name },
+    }))
+  );
+}
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  const { text } = await req.json().catch(() => ({}));
+  if (!text || !String(text).trim()) {
+    return NextResponse.json({ ok: false, error: "empty" }, { status: 400 });
+  }
+  const uid = getUserId(req);
+  if (!uid) return NextResponse.json({ ok: false }, { status: 401 });
+
+  const th = await prisma.thread.findUnique({ where: { id: params.id } }) as any;
+  if (!th) return NextResponse.json({ ok: false }, { status: 404 });
+  if (th.aId && th.bId && th.aId !== uid && th.bId !== uid) {
+    return NextResponse.json({ ok: false }, { status: 403 });
+  }
+
+  // если у отправителя тред был скрыт — расскрываем (но clearedAt не трогаем)
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO "ChatState"(threadId,userId,hiddenAt,clearedAt)
+     VALUES(?,?,NULL,NULL)
+     ON CONFLICT(threadId,userId) DO UPDATE SET hiddenAt=NULL;`,
+    th.id, uid
+  );
+
+  const msg = await prisma.message.create({
+    data: { threadId: th.id, authorId: uid, text: String(text).trim() },
+    select: { id: true, text: true, createdAt: true, author: { select: { id: true, name: true } } },
   });
 
-  return NextResponse.json({ id: created.id }, { status: 201 });
+  await prisma.$executeRawUnsafe(
+    `UPDATE "Thread" SET "lastMessageAt" = ?, "lastMessageText" = ? WHERE "id" = ?;`,
+    msg.createdAt, msg.text, th.id
+  );
+
+  await prisma.chatRead.upsert({
+    where: { threadId_userId: { threadId: th.id, userId: uid } },
+    create: { threadId: th.id, userId: uid, lastReadAt: msg.createdAt },
+    update: { lastReadAt: msg.createdAt },
+  });
+
+  const to = [th.aId, th.bId].filter(Boolean);
+  pushMessage(to, th.id, {
+    id: msg.id, text: msg.text,
+    createdAt: msg.createdAt.toISOString(),
+    author: { id: msg.author.id, name: msg.author.name },
+  });
+  pushThreadUpdated(to);
+
+  return NextResponse.json({ ok: true, message: msg });
 }

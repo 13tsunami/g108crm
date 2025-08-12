@@ -1,27 +1,42 @@
 // app/api/chat/threads/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { getMe, parsePeer } from "../../_utils";
+import { pushThreadUpdated } from "../../_bus";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const prisma = new PrismaClient();
 
-export async function DELETE(req: NextRequest, ctx: { params: { id: string } }) {
-  const me = await getMe(prisma, req);
-  if (!me) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+// минимальная утилита userId
+function getUserId(req: NextRequest): string | null {
+  const h = req.headers.get("x-user-id");
+  if (h && h.trim()) return h.trim();
+  const cookie = req.headers.get("cookie") || "";
+  const m = cookie.match(/(?:^|;\s*)uid=([^;]+)/i);
+  if (m) { try { return decodeURIComponent(m[1]); } catch {} }
+  return null;
+}
 
-  const { id } = ctx.params;
-  const t = await prisma.thread.findUnique({ where: { id }, select: { title: true } });
-  if (!t) return NextResponse.json({ error: "not found" }, { status: 404 });
+// GET — отдать тред и сообщения после clearedAt (как делали ранее)
+// (можешь оставить свой GET, если уже ок)
 
-  // удалять может только участник
-  if (!parsePeer(t.title, me.id)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+  const uid = getUserId(req);
+  if (!uid) return new NextResponse(null, { status: 401 });
 
-  await prisma.message.deleteMany({ where: { threadId: id } });
-  await prisma.chatRead.deleteMany({ where: { threadId: id } });
-  await prisma.thread.delete({ where: { id } });
+  // soft-delete для конкретного пользователя + обрезаем историю с текущего момента
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO "ChatState"(threadId,userId,hiddenAt,clearedAt)
+     VALUES(?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT(threadId,userId) DO UPDATE
+     SET hiddenAt=CURRENT_TIMESTAMP, clearedAt=CURRENT_TIMESTAMP;`,
+    params.id, uid
+  );
 
-  return NextResponse.json({ ok: true });
+  // обновить списки/бейджи у этого пользователя
+  pushThreadUpdated([uid]);
+
+  // правильный ответ для DELETE
+  return new NextResponse(null, { status: 204 });
 }

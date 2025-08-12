@@ -1,70 +1,75 @@
-// app/api/chat/threads/list/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { getMe, parsePeer } from "../../_utils";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const prisma = new PrismaClient();
 
+function getUserId(req: NextRequest) {
+  const h = req.headers.get("x-user-id"); if (h) return h;
+  const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)uid=([^;]+)/i);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 export async function GET(req: NextRequest) {
-  const me = await getMe(prisma, req);
-  if (!me) return NextResponse.json([], { status: 401 });
+  const uid = getUserId(req);
+  if (!uid) return NextResponse.json([]);
 
-  // ограничим сразу на уровне БД
-  const rows = await prisma.thread.findMany({
-    where: {
-      OR: [
-        { title: { startsWith: `direct:${me.id}:` } },
-        { title: { endsWith: `:${me.id}` } },
-      ],
-    },
-    include: {
-      messages: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        include: { author: { select: { id: true, name: true } } }
-      }
-    }
-  });
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `
+    SELECT
+      t.id,
+      CASE WHEN t.aId = ? THEN t.bId ELSE t.aId END AS peerId,
+      (SELECT name FROM "User" u WHERE u.id = CASE WHEN t.aId = ? THEN t.bId ELSE t.aId END) AS peerName,
+      -- pulled clearedAt for current user (may be NULL)
+      (SELECT cs.clearedAt FROM "ChatState" cs WHERE cs.threadId = t.id AND cs.userId = ? LIMIT 1) AS clearedAt,
 
-  const items = await Promise.all(rows.map(async t => {
-    const peerId = parsePeer(t.title, me.id)!;
-    const peer = await prisma.user.findUnique({ where: { id: peerId }, select: { name: true } });
+      -- last visible text/time AFTER clearedAt
+      (SELECT m2.text
+         FROM "Message" m2
+        WHERE m2.threadId = t.id AND m2.createdAt > COALESCE(
+              (SELECT cs.clearedAt FROM "ChatState" cs WHERE cs.threadId = t.id AND cs.userId = ? LIMIT 1), 0)
+        ORDER BY m2.createdAt DESC
+        LIMIT 1) AS lastMessageText,
 
-    const myRead = await prisma.chatRead.findUnique({
-      where: { threadId_userId: { threadId: t.id, userId: me.id } },
-      select: { lastReadAt: true }
-    });
-    const myReadAt = myRead?.lastReadAt ?? new Date(0);
+      (SELECT m2.createdAt
+         FROM "Message" m2
+        WHERE m2.threadId = t.id AND m2.createdAt > COALESCE(
+              (SELECT cs.clearedAt FROM "ChatState" cs WHERE cs.threadId = t.id AND cs.userId = ? LIMIT 1), 0)
+        ORDER BY m2.createdAt DESC
+        LIMIT 1) AS lastMessageAt,
 
-    const peerRead = await prisma.chatRead.findUnique({
-      where: { threadId_userId: { threadId: t.id, userId: peerId } },
-      select: { lastReadAt: true }
-    });
+      -- unread AFTER both lastReadAt and clearedAt
+      (SELECT COUNT(1)
+         FROM "Message" m
+        WHERE m.threadId = t.id
+          AND m.authorId <> ?
+          AND m.createdAt > COALESCE(
+                (SELECT r2.lastReadAt FROM "ChatRead" r2 WHERE r2.threadId = t.id AND r2.userId = ?), 0)
+          AND m.createdAt > COALESCE(
+                (SELECT cs.clearedAt   FROM "ChatState" cs WHERE cs.threadId = t.id AND cs.userId = ?), 0)
+      ) AS unreadCount
 
-    const unreadCount = await prisma.message.count({
-      where: { threadId: t.id, createdAt: { gt: myReadAt }, NOT: { authorId: me.id } }
-    });
+    FROM "Thread" t
+    WHERE (t.aId = ? OR t.bId = ?)
+      AND NOT EXISTS (
+        SELECT 1 FROM "ChatState" csx
+        WHERE csx.threadId = t.id AND csx.userId = ? AND csx.hiddenAt IS NOT NULL
+      )
+    ORDER BY (lastMessageAt IS NULL), lastMessageAt DESC, t.id DESC;
+    `,
+    uid, uid,        // peer
+    uid, uid, uid,   // clearedAt + lastMessage filters
+    uid, uid, uid,   // unread filters
+    uid, uid,        // participation
+    uid              // NOT EXISTS(hidden)
+  );
 
-    return {
-      id: t.id,
-      peerId,
-      peerName: peer?.name ?? null,
-      lastMessageText: t.messages[0]?.text ?? null,
-      lastMessageAt: t.messages[0]?.createdAt?.toISOString?.() ?? null,
-      unreadCount,
-      peerReadAt: peerRead?.lastReadAt?.toISOString?.() ?? null
-    };
-  }));
-
-  // сортировка по последнему сообщению
-  items.sort((a, b) => {
-    const ax = a.lastMessageAt ? Date.parse(a.lastMessageAt) : 0;
-    const bx = b.lastMessageAt ? Date.parse(b.lastMessageAt) : 0;
-    return bx - ax;
-  });
-
-  return NextResponse.json(items);
+  return NextResponse.json(
+    rows.map(r => ({
+      id: r.id,
+      peerId: r.peerId,
+      peerName: r.peerName ?? null,
+      lastMessageText: r.lastMessageText ?? null,
+      lastMessageAt: r.lastMessageAt ? new Date(r.lastMessageAt).toISOString() : null,
+      unreadCount: Number(r.unreadCount || 0),
+    }))
+  );
 }

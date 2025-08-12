@@ -8,26 +8,36 @@ datasource db {
 }
 
 model User {
-  id               String         @id @default(cuid())
+  id               String    @id @default(cuid())
   name             String
-  username         String?        @unique
-  email            String?        @unique
-  phone            String?        @unique
+  username         String?   @unique
+  email            String?   @unique
+  phone            String?   @unique
   birthday         DateTime?
   classroom        String?
   role             String?
   avatarUrl        String?
   telegram         String?
   about            String?
-  notifyEmail      Boolean        @default(true)
-  notifyTelegram   Boolean        @default(false)
+  notifyEmail      Boolean   @default(true)
+  notifyTelegram   Boolean   @default(false)
   subjects         String?
   methodicalGroups String?
   passwordHash     String?
   lastSeen         DateTime?
-  groups           GroupMember[]
-  messages         Message[]      @relation("MessageAuthor")
-  tasks            TaskAssignee[]
+
+  // твои связи
+  groups   GroupMember[]
+  messages Message[]      @relation("MessageAuthor")
+  tasks    TaskAssignee[]
+
+  // добавил для чатов (ничего не ломает)
+  threadsA Thread[]   @relation("ThreadA")
+  threadsB Thread[]   @relation("ThreadB")
+  reads    ChatRead[]
+
+  @@index([name])
+  @@index([role])
 }
 
 model Group {
@@ -42,6 +52,9 @@ model GroupMember {
   groupId String
   group   Group  @relation(fields: [groupId], references: [id])
   user    User   @relation(fields: [userId], references: [id])
+
+  @@index([groupId])
+  @@index([userId])
 }
 
 model Task {
@@ -53,6 +66,8 @@ model Task {
   priority    String         @default("normal")
   assignees   TaskAssignee[]
   tags        TaskTag[]
+
+  @@index([dueDate])
 }
 
 model TaskAssignee {
@@ -61,6 +76,9 @@ model TaskAssignee {
   userId String
   user   User   @relation(fields: [userId], references: [id])
   task   Task   @relation(fields: [taskId], references: [id])
+
+  @@index([taskId])
+  @@index([userId])
 }
 
 model Tag {
@@ -75,12 +93,34 @@ model TaskTag {
   tagId  String
   tag    Tag    @relation(fields: [tagId], references: [id])
   task   Task   @relation(fields: [taskId], references: [id])
+
+  @@index([taskId])
+  @@index([tagId])
 }
 
 model Thread {
-  id       String    @id @default(cuid())
-  title    String
+  id String @id @default(cuid())
+
+  // твоя колонка — сохраняю как есть
+  title String
+
+  // добавлено для 1–1 чатов
+  aId String
+  bId String
+  a   User   @relation("ThreadA", fields: [aId], references: [id])
+  b   User   @relation("ThreadB", fields: [bId], references: [id])
+
+  // служебные поля для быстрых списков/бейджей
+  lastMessageAt   DateTime?
+  lastMessageText String?
+
+  // связи
   messages Message[]
+  reads    ChatRead[]
+
+  // одна пара — один тред (пару сортируем в коде)
+  @@unique([aId, bId], map: "thread_pair_unique")
+  @@index([lastMessageAt, id], map: "thread_last_idx")
 }
 
 model Message {
@@ -89,17 +129,26 @@ model Message {
   text      String
   authorId  String
   threadId  String
-  thread    Thread   @relation(fields: [threadId], references: [id])
-  author    User     @relation("MessageAuthor", fields: [authorId], references: [id])
+
+  thread Thread @relation(fields: [threadId], references: [id])
+  author User   @relation("MessageAuthor", fields: [authorId], references: [id])
+
+  @@index([threadId, createdAt], map: "msg_thread_time_idx")
+  @@index([authorId], map: "msg_author_idx")
 }
 
 model ChatRead {
+  // оставляю твой id, ничего не меняю
   id         String   @id @default(cuid())
   threadId   String
   userId     String
   lastReadAt DateTime @default(now())
 
+  // добавил явные связи — это удобно для include/Studio
+  thread Thread @relation(fields: [threadId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
   @@unique([threadId, userId])
-  @@index([userId])
-  @@index([threadId])
+  @@index([userId], map: "read_user_idx")
+  @@index([threadId], map: "read_thread_idx")
 }
