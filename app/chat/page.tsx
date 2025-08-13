@@ -39,9 +39,21 @@ function dedupeByPeer(list: ThreadListItem[]) {
   return arr;
 }
 
+// --- добавлено: серверный источник истины "кто я"
+async function fetchMeFromServer(): Promise<{ id: string; name: string | null } | null> {
+  try {
+    const r = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (j?.id) return { id: String(j.id), name: j?.name ?? null };
+  } catch {}
+  return null;
+}
+
 export default function ChatPage() {
   const { data: session, status } = useSession();
-  const meId = useMemo(() => (session?.user as any)?.id as string | undefined, [session?.user]);
+  const sessionUserName = (session?.user?.name as string) ?? null;
+  const sessionUserId = useMemo(() => (session?.user as any)?.id as string | undefined, [session?.user]);
 
   const [threads, setThreads] = useState<ThreadListItem[]>([]);
   const [active, setActive] = useState<ThreadListItem | null>(null);
@@ -51,19 +63,15 @@ export default function ChatPage() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
 
-  // подпись «кто отправил последний» в списке тредов
   const [lastFromMe, setLastFromMe] = useState<Record<string, boolean>>({});
 
-  // поиск по диалогу
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<string[]>([]);
   const [hitIdx, setHitIdx] = useState(0);
 
-  // выбранные файлы (UI только)
   const [files, setFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // поиск людей
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
   const [found, setFound] = useState<SimpleUser[]>([]);
@@ -72,7 +80,6 @@ export default function ChatPage() {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const ddPos = useRef<{ left: number; top: number; width: number } | null>(null);
 
-  // тех
   const userSseRef = useRef<EventSource | null>(null);
   const pollRef = useRef<number | null>(null);
   const meIdRef = useRef<string | undefined>(undefined);
@@ -80,11 +87,9 @@ export default function ChatPage() {
   const typingCooldownRef = useRef(0);
   const typingHideTimerRef = useRef<number | null>(null);
 
-  // звук
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastSoundAtRef = useRef(0);
 
-  // скролл
   const paneRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const msgRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -99,7 +104,6 @@ export default function ChatPage() {
     const prev = el.style.scrollBehavior;
     el.style.scrollBehavior = "auto";
     el.scrollTop = el.scrollHeight;
-    // вернуть smooth после кадра
     requestAnimationFrame(() => { el.style.scrollBehavior = prev || "smooth"; });
   };
   const scrollToMsg = (id: string) => {
@@ -114,95 +118,126 @@ export default function ChatPage() {
   }
 
   const styles = (
-    <style>{`
-      .chat-root { display: grid; grid-template-columns: 360px 1fr; min-height: 560px; }
-      .threads { border-right: 1px solid #e5e7eb; font-size: 13px; }
-      .thread { width: 100%; text-align: left; padding: 8px 44px 8px 12px; border-radius: 12px; border: 1px solid #e5e7eb; background: #fff; position: relative; cursor: pointer; }
-      .thread + .thread { margin-top: 8px; }
-      .thread--active { background: #eef2ff; border-color: #c7e3ff; }
-      .thread--unread { background: #fff7ed; border-color: #fde68a; }
-      .thread--unread::before { content:""; position:absolute; left:-1px; top:-1px; bottom:-1px; width:4px; background:#ef9b28; border-top-left-radius:12px; border-bottom-left-radius:12px; }
-      .thread__last { color:#374151; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .thread__last--mine { text-align: right; }
-      .badge { position:absolute; right:30px; top:4px; font-size:10px; background:${BRAND}; color:#fff; padding:0 5px; border-radius:9999px; } /* ещё меньше */
+  <style>{`
+    .chat-root { display: grid; grid-template-columns: 360px 1fr; min-height: 560px; }
+    .threads { border-right: 1px solid #e5e7eb; font-size: 13px; }
+    .thread { width: 100%; text-align: left; padding: 8px 44px 8px 12px; border-radius: 12px; border: 1px solid #e5e7eb; background: #fff; position: relative; cursor: pointer; }
+    .thread + .thread { margin-top: 8px; }
+    .thread--active { background: #eef2ff; border-color: #c7e3ff; }
+    .thread--unread { background: #fff7ed; border-color: #fde68a; }
+    .thread--unread::before { content:""; position:absolute; left:-1px; top:-1px; bottom:-1px; width:4px; background:#ef9b28; border-top-left-radius:12px; border-bottom-left-radius:12px; }
+    .thread__last { color:#374151; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .thread__last--mine { text-align: right; }
+    .badge { position:absolute; right:30px; top:4px; font-size:10px; background:${BRAND}; color:#fff; padding:0 5px; border-radius:9999px; }
 
-      .pane { display:grid; grid-template-rows: auto 1fr auto; }
-      .pane-header { position:relative; padding:12px 12px 6px; border-bottom:1px solid #e5e7eb; min-height: 56px; }
-      .pane-title { text-align:center; font-weight:700; }
-      .pane-typing { position:absolute; right:12px; top:34px; color:#6b7280; font-size:12px; }
-      .pane-search { position:absolute; right:12px; top:8px; width:220px; display:flex; gap:6px; }
-      .pane-search input { width:100%; padding:6px 8px; border:1px solid #e5e7eb; border-radius:8px; outline:none; }
-      .pane-search small { display:inline-block; min-width:42px; text-align:center; color:#6b7280; line-height:24px; }
-      .pane-body { padding:12px; overflow:auto; height: 62vh; scroll-behavior: smooth; }
-      .pane-footer { border-top:1px solid #e5e7eb; padding:12px; display:flex; gap:8px; align-items:flex-start; }
+    .pane { display:grid; grid-template-rows: auto 1fr auto; }
+    .pane-header { position:relative; padding:12px 12px 6px; border-bottom:1px solid #e5e7eb; min-height: 56px; }
+    .pane-title { text-align:center; font-weight:700; }
+    .pane-typing { position:absolute; right:12px; top:34px; color:#6b7280; font-size:12px; }
+    .pane-search { position:absolute; right:12px; top:8px; width:220px; display:flex; gap:6px; }
+    .pane-search input { width:100%; padding:6px 8px; border:1px solid #e5e7eb; border-radius:8px; outline:none; }
+    .pane-search small { display:inline-block; min-width:42px; text-align:center; color:#6b7280; line-height:24px; }
+    .pane-body { padding:12px; overflow:auto; height: 62vh; scroll-behavior: smooth; }
+    .pane-footer { border-top:1px solid #e5e7eb; padding:12px; display:flex; gap:8px; align-items:flex-start; }
 
-      .btn-del { position:absolute; right:6px; top:6px; width:10px; height:10px; background:${BRAND}; color:#fff; border:none; border-radius:2px; font-weight:800; line-height:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
+    .btn-del { position:absolute; right:6px; top:6px; width:10px; height:10px; background:${BRAND}; color:#fff; border:none; border-radius:2px; font-weight:800; line-height:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
 
-      .dd { position: fixed; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 16px rgba(0,0,0,.06), 0 4px 6px rgba(0,0,0,.04); z-index:60; max-height:260px; overflow:auto;}
-      .dd-item { width:100%; text-align:left; padding:8px 10px; border:0; background:transparent; cursor:pointer; }
+    .dd { position: fixed; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 16px rgba(0,0,0,.06), 0 4px 6px rgba(0,0,0,.04); z-index:60; max-height:260px; overflow:auto;}
+    .dd-item { width:100%; text-align:left; padding:8px 10px; border:0; background:transparent; cursor:pointer; }
 
-      .msgRow { display:flex; margin-bottom:10px; }
-      .msgRow.mine { justify-content: flex-end; }
-      .msgCard { max-width: 72%; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:8px 10px; display:flex; flex-direction:column; }
-      .msgHead { display:flex; align-items:baseline; gap:6px; font-weight:700; }
-      .msgRow.mine .msgHead { justify-content:flex-end; text-align:right; }
-      .msgRow:not(.mine) .msgHead { justify-content:flex-start; text-align:left; }
-      .msgMeta { color:#6b7280; font-weight:400; }
-      .msgText { margin-top:6px; white-space: pre-wrap; word-break: break-word; }
-      .msgSep { border-top:1px solid #e5e7eb; margin-top:8px; }
+    .msgRow { display:flex; margin-bottom:10px; }
+    .msgRow.mine { justify-content: flex-end; }
+    .msgCard { max-width: 72%; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:8px 10px; display:flex; flex-direction:column; }
+    .msgHead { display:flex; align-items:baseline; gap:6px; font-weight:700; }
+    .msgRow.mine .msgHead { justify-content:flex-end; text-align:right; }
+    .msgRow:not(.mine) .msgHead { justify-content:flex-start; text-align:left; }
+    .msgMeta { color:#6b7280; font-weight:400; }
+    .msgText { margin-top:6px; white-space: pre-wrap; word-break: break-word; }
+    .msgSep { border-top:1px solid #e5e7eb; margin-top:8px; }
 
-      .sendBtn { padding: 0 16px; border-radius: 10px; border: 1px solid ${BRAND}; background: ${BRAND}; color:#fff;
-                 transition: transform .08s ease, box-shadow .08s ease, filter .08s ease; height: 64px; }
-      .sendBtn:hover { box-shadow: 0 3px 10px rgba(0,0,0,.18); transform: translateY(-1px); filter: blur(0.2px) saturate(105%); }
-      .sendBtn:active { transform: translateY(0); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-      .sendBtn:disabled { opacity:.6; cursor: default; filter:none; box-shadow:none; transform:none; }
+    .sendBtn { padding: 0 16px; border-radius: 10px; border: 1px solid ${BRAND}; background: ${BRAND}; color:#fff;
+               transition: transform .08s ease, box-shadow .08s ease, filter .08s ease; height: 64px; }
+    .sendBtn:hover { box-shadow: 0 3px 10px rgba(0,0,0,.18); transform: translateY(-1px); filter: blur(0.2px) saturate(105%); }
+    .sendBtn:active { transform: translateY(0); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    .sendBtn:disabled { opacity:.6; cursor: default; filter:none; box-shadow:none; transform:none; }
 
-      .plusBtn { width:40px; height:64px; border:1px dashed ${BRAND}; color:${BRAND}; background:#fff; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
-      .plusBtn:hover { background: #fff5f5; }
+    .plusBtn { width:40px; height:64px; border:1px dashed ${BRAND}; color:${BRAND}; background:#fff; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
+    .plusBtn:hover { background: #fff5f5; }
 
-      mark.chat-hl { background: #fef08a; padding: 0 2px; border-radius: 3px; }
-      .fileChip { display:inline-flex; align-items:center; gap:6px; border:1px solid #e5e7eb; border-radius:999px; padding:2px 8px; margin-top:6px; margin-right:6px; font-size:12px; }
-      .fileChip button { border:0; background:transparent; cursor:pointer; color:#6b7280; }
-    `}</style>
-  );
+    mark.chat-hl { background: #fef08a; padding: 0 2px; border-radius: 3px; }
+    .fileChip { display:inline-flex; align-items:center; gap:6px; border:1px solid #e5e7eb; border-radius:999px; padding:2px 8px; margin-top:6px; margin-right:6px; font-size:12px; }
+    .fileChip button { border:0; background:transparent; cursor:pointer; color:#6b7280; }
+
+    .msgCard { backdrop-filter: blur(2px); }
+    .msgRow:not(.mine) .msgCard { background: rgba(169, 231, 255, 1); }
+    .msgRow.mine .msgCard { background: #e6ffea; }
+  `}</style>
+);
+
+  // мягкая зачистка старой dev-куки uid (если вдруг ставилась ранее)
+  useEffect(() => {
+    document.cookie = "uid=; Max-Age=0; path=/";
+  }, []);
 
   useEffect(() => {
-    if (status === "loading") return;
-    if (status !== "authenticated") {
-      meIdRef.current = undefined;
-      setThreads([]); setActive(null); setMessages([]);
-      try { userSseRef.current?.close(); } catch {}
-      userSseRef.current = null;
-      if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; }
-      return;
-    }
-    meIdRef.current = meId;
+    let cancelled = false;
 
-    try {
-      const cached = JSON.parse(localStorage.getItem(ls(meId).threads) || "[]");
-      if (Array.isArray(cached)) setThreads(dedupeByPeer(cached));
-      const last = localStorage.getItem(ls(meId).last) || "";
-      if (last && Array.isArray(cached)) {
-        const t = cached.find((x: ThreadListItem) => x.id === last);
-        if (t) setActive(t);
+    const boot = async () => {
+      if (status === "loading") return;
+
+      if (status !== "authenticated") {
+        meIdRef.current = undefined;
+        setThreads([]); setActive(null); setMessages([]);
+        try { userSseRef.current?.close(); } catch {}
+        userSseRef.current = null;
+        if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; }
+        return;
       }
-    } catch {}
 
-    reloadThreads();
-    preloadUsers();
-    attachSSE();
-    startPolling();
-  }, [status, meId]);
+      // ключ: подтверждаем id через сервер; если /api/auth/me недоступен — мягкий fallback на session.user.id
+      const meSrv = await fetchMeFromServer();
+      const uid = meSrv?.id ?? sessionUserId;
+      if (cancelled) return;
+
+      meIdRef.current = uid;
+
+      if (!meIdRef.current) {
+        setThreads([]); setActive(null); setMessages([]);
+        try { userSseRef.current?.close(); } catch {}
+        userSseRef.current = null;
+        if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; }
+        return;
+      }
+
+      try {
+        const cached = JSON.parse(localStorage.getItem(ls(meIdRef.current).threads) || "[]");
+        if (Array.isArray(cached)) setThreads(dedupeByPeer(cached));
+        const last = localStorage.getItem(ls(meIdRef.current).last) || "";
+        if (last && Array.isArray(cached)) {
+          const t = cached.find((x: ThreadListItem) => x.id === last);
+          if (t) setActive(t);
+        }
+      } catch {}
+
+      reloadThreads();
+      preloadUsers();
+      attachSSE();
+      startPolling();
+    };
+
+    boot();
+    return () => { cancelled = true; };
+  }, [status, sessionUserId]);
 
   useEffect(() => {
-    if (!meId) return;
+    const uid = meIdRef.current;
+    if (!uid) return;
     try {
-      localStorage.setItem(ls(meId).threads, JSON.stringify(threads));
+      localStorage.setItem(ls(uid).threads, JSON.stringify(threads));
       window.dispatchEvent(new Event("g108:chat-threads-updated"));
     } catch {}
-  }, [threads, meId]);
+  }, [threads]);
 
-  // автопрокрутка в процессе общения (не при открытии)
   useEffect(() => {
     if (!active) return;
     if (justOpenedRef.current) return;
@@ -211,7 +246,6 @@ export default function ChatPage() {
     if (mine || isNearBottom()) scrollToBottom("smooth");
   }, [messages, active?.id]);
 
-  // поиск по диалогу
   useEffect(() => {
     if (!q.trim()) { setHits([]); setHitIdx(0); return; }
     const needle = q.toLocaleLowerCase("ru-RU");
@@ -234,6 +268,7 @@ export default function ChatPage() {
   };
 
   async function reloadThreads() {
+    if (!meIdRef.current) return;
     const r = await fetch("/api/chat/threads/list", { cache: "no-store", headers: headers() }).catch(() => null);
     if (!r?.ok) return;
     let list: ThreadListItem[] = [];
@@ -247,6 +282,7 @@ export default function ChatPage() {
   }
 
   async function loadMessages(threadId: string) {
+    if (!meIdRef.current) return;
     justOpenedRef.current = true;
     const r = await fetch(`/api/chat/threads/${threadId}/messages`, { cache: "no-store", headers: headers() }).catch(() => null);
     if (!r?.ok) { justOpenedRef.current = false; return; }
@@ -262,16 +298,14 @@ export default function ChatPage() {
       setPeerReadAt(json.peerReadAt);
     }
 
-    // сразу вниз — без плавной прокрутки
     setTimeout(() => {
       jumpToBottomInstant();
-      // через кадр разрешаем «плавные» автоскроллы
       setTimeout(() => { justOpenedRef.current = false; }, 50);
     }, 0);
   }
 
   async function preloadUsers() {
-    if (allUsers) return;
+    if (!meIdRef.current || allUsers) return;
     try {
       const r = await fetch("/api/chat/users", { cache: "no-store", headers: headers() });
       if (r.ok) setAllUsers(await r.json());
@@ -282,9 +316,8 @@ export default function ChatPage() {
     const el = audioRef.current;
     if (!el) return;
     const now = Date.now();
-    if (now - lastSoundAtRef.current < 300) return; // анти-спам
+    if (now - lastSoundAtRef.current < 300) return;
     lastSoundAtRef.current = now;
-    // может быть заблокировано политикой браузера до первого взаимодействия — это ок
     el.currentTime = 0;
     el.play().catch(() => {});
   }
@@ -322,7 +355,6 @@ export default function ChatPage() {
 
           setLastFromMe(prev => ({ ...prev, [tid]: !!mine }));
 
-          // звук только на входящие
           if (!mine) playIncoming();
 
           if (active?.id === tid) {
@@ -348,6 +380,7 @@ export default function ChatPage() {
   function startPolling() {
     if (pollRef.current !== null) clearInterval(pollRef.current);
     pollRef.current = window.setInterval(() => {
+      if (!meIdRef.current) return;
       if (document.visibilityState !== "visible") return;
       reloadThreads();
       if (active?.id) loadMessages(active.id);
@@ -439,14 +472,15 @@ export default function ChatPage() {
 
   async function send() {
     if (!active || sending) return;
-    const text = draft.trim(); if (!text) return; // логику не меняем — только текст
+    if (!meIdRef.current) return; // без подтверждённого id не отправляем
+    const text = draft.trim(); if (!text) return;
 
     setSending(true);
     try {
       const tempId = `tmp_${Date.now()}`;
       const tempMsg: Message = {
         id: tempId, text, createdAt: new Date().toISOString(),
-        author: { id: meIdRef.current || "me", name: (session?.user?.name as string) ?? meIdRef.current ?? null },
+        author: { id: meIdRef.current, name: sessionUserName },
       };
       setMessages(prev => [...prev, tempMsg]);
       setDraft("");
@@ -478,11 +512,12 @@ export default function ChatPage() {
   }
 
   function pingTyping() {
+    if (!meIdRef.current) return;
     const now = Date.now();
     if (!active || now < typingCooldownRef.current) return;
     typingCooldownRef.current = now + 1500;
     fetch("/api/chat/typing", {
-      method: "POST", headers: headers({ "Content-Type": "application/json" }),
+      method: "POST", headers: headers({ "Content-Type": "application/json" } ),
       body: JSON.stringify({ threadId: active.id }),
     }).catch(() => {});
   }
@@ -494,7 +529,6 @@ export default function ChatPage() {
   return (
     <section style={{ fontFamily: '"Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial', fontSize: 14 }}>
       {styles}
-      {/* звуковой элемент; положи mp3 в /public */}
       <audio ref={audioRef} src="/pressing-a-button-with-sound.mp3" preload="auto" />
       <div className="chat-root">
         <aside className="threads">
@@ -587,7 +621,7 @@ export default function ChatPage() {
               return (
                 <div
                   key={m.id}
-                  ref={(el) => { msgRefs.current[m.id] = el; }}  // callback ref: void
+                  ref={(el) => { msgRefs.current[m.id] = el; }}
                   className={`msgRow ${mine ? "mine" : ""}`}
                   style={hasHit ? { outline: "2px solid #fde68a", borderRadius: 12 } : undefined}
                 >
@@ -647,7 +681,7 @@ export default function ChatPage() {
                 </div>
               )}
             </div>
-            <button onClick={send} disabled={!active || !draft.trim() || sending} className="sendBtn">
+            <button onClick={send} disabled={!active || !draft.trim() || sending || !meIdRef.current} className="sendBtn">
               {sending ? "Отправка…" : "Отправить"}
             </button>
           </div>

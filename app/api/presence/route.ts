@@ -1,64 +1,48 @@
 // app/api/presence/route.ts
-import { prisma } from "@/lib/prisma";
+import { NextRequest, NextResponse } from "next/server";
+import { PrismaClient } from "@prisma/client";
+import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
-type J = Record<string, unknown>;
-const json = (data: J, init?: ResponseInit) => Response.json(data, init);
+export const dynamic = "force-dynamic";
 
-async function hasCol(col: string) {
-  const rows = await prisma.$queryRawUnsafe<{ name: string }[]>("PRAGMA table_info('User');");
-  return rows.some((r) => r.name === col);
+const g = globalThis as any;
+const prisma: PrismaClient = g.prisma ?? new PrismaClient();
+if (!g.prisma) g.prisma = prisma;
+
+function json(data: unknown, status = 200) {
+  return NextResponse.json(data, { status });
 }
 
-export async function POST(req: Request) {
+async function touch() {
+  const c = await cookies(); // обязательно await
+  const meId = c.get("uid")?.value ?? null;
+  if (!meId) return { ok: false, reason: "no uid cookie" };
+
   try {
-    const body = await req.json().catch(() => ({}));
-    const id = typeof body?.id === "string" ? body.id : "";
-    if (!id) return json({ error: "id обязателен" }, { status: 400 });
-
-    if (await hasCol("lastSeen")) {
-      await prisma.$executeRawUnsafe(
-        `UPDATE "User" SET "lastSeen" = CURRENT_TIMESTAMP WHERE "id" = ?`,
-        id
-      );
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id },
-      select: { id: true, name: true, email: true, username: true },
+    await prisma.user.update({
+      where: { id: meId },
+      data: { lastSeen: new Date() },
     });
-
-    return json({ ok: true, user });
-  } catch (e: any) {
-    return json({ error: e?.message ?? "Internal error" }, { status: 500 });
+    return { ok: true, meId, now: new Date().toISOString() };
+  } catch (e) {
+    console.error("presence touch error:", e);
+    return { ok: false, reason: "db" };
   }
 }
 
-export async function GET(req: Request) {
-  try {
-    const id = new URL(req.url).searchParams.get("id") || "";
-    if (!id) return json({ error: "id обязателен" }, { status: 400 });
+export async function GET(_req: NextRequest)   { return json(await touch(), 200); }
+export async function POST(_req: NextRequest)  { return json(await touch(), 200); }
+export async function PATCH(_req: NextRequest) { return json(await touch(), 200); }
+export async function PUT(_req: NextRequest)   { return json(await touch(), 200); }
+export async function HEAD()                   { return new NextResponse(null, { status: 204 }); }
 
-    let lastSeen: string | null = null;
-    if (await hasCol("lastSeen")) {
-      const row = await prisma.$queryRawUnsafe<{ lastSeen: string | null }[]>(
-        `SELECT "lastSeen" FROM "User" WHERE "id" = ?`,
-        id
-      );
-      lastSeen = row?.[0]?.lastSeen ?? null;
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id },
-      select: { id: true, name: true, email: true, username: true },
-    });
-
-    const now = Date.now();
-    const seen = lastSeen ? new Date(lastSeen).getTime() : 0;
-    const online = lastSeen ? seen > 0 && now - seen <= 5 * 60 * 1000 : null;
-
-    return json({ ok: true, user, lastSeen, online });
-  } catch (e: any) {
-    return json({ error: e?.message ?? "Internal error" }, { status: 500 });
-  }
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Methods": "GET,POST,PATCH,PUT,HEAD,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    },
+  });
 }

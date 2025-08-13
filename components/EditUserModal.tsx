@@ -14,12 +14,9 @@ type RowUser = {
   roleSlug?: string;
   birthday?: string | null;
   telegram?: string | null;
-  avatarUrl?: string | null;
   about?: string | null;
   notifyEmail?: boolean;
   notifyTelegram?: boolean;
-  subjects?: string[];
-  methodicalGroups?: string[];
 };
 
 export default function EditUserModal({
@@ -48,12 +45,9 @@ export default function EditUserModal({
           roleSlug: user.roleSlug ?? "teacher",
           birthday: user.birthday ?? null,
           telegram: user.telegram ?? "",
-          avatarUrl: user.avatarUrl ?? "",
           about: user.about ?? "",
           notifyEmail: !!user.notifyEmail,
           notifyTelegram: !!user.notifyTelegram,
-          subjects: user.subjects ?? [],
-          methodicalGroups: user.methodicalGroups ?? [],
         }}
         allowRoleChange={allowRoleChange}
         onSuccess={() => {

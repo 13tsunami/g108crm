@@ -25,13 +25,16 @@ model User {
   methodicalGroups String?
   passwordHash     String?
   lastSeen         DateTime?
+  accounts         Account[]
+  sessions         Session[]
 
-  // твои связи
-  groups   GroupMember[]
-  messages Message[]      @relation("MessageAuthor")
-  tasks    TaskAssignee[]
+  // связи
+  groups       GroupMember[]
+  messages     Message[]      @relation("MessageAuthor")
+  tasks        TaskAssignee[] // где пользователь выступает исполнителем
+  createdTasks Task[]         @relation("TaskCreatedBy") // где пользователь — назначивший задачу
 
-  // добавил для чатов (ничего не ломает)
+  // для чатов
   threadsA Thread[]   @relation("ThreadA")
   threadsB Thread[]   @relation("ThreadB")
   reads    ChatRead[]
@@ -50,33 +53,44 @@ model GroupMember {
   id      String @id @default(cuid())
   userId  String
   groupId String
-  group   Group  @relation(fields: [groupId], references: [id])
-  user    User   @relation(fields: [userId], references: [id])
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([groupId])
   @@index([userId])
 }
 
 model Task {
-  id          String         @id @default(cuid())
+  id          String   @id @default(cuid())
+  seq         Int? // сквозной номер
   title       String
   description String
   dueDate     DateTime
-  hidden      Boolean        @default(false)
-  priority    String         @default("normal")
-  assignees   TaskAssignee[]
-  tags        TaskTag[]
+  hidden      Boolean  @default(false)
+  priority    String   @default("normal")
+
+  createdById String? // кто назначил
+  createdBy   User?   @relation(name: "TaskCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  assignees TaskAssignee[]
+  tags      TaskTag[]
 
   @@index([dueDate])
+  @@index([createdById])
 }
 
 model TaskAssignee {
-  id     String @id @default(cuid())
+  id     String    @id @default(cuid())
   taskId String
   userId String
-  user   User   @relation(fields: [userId], references: [id])
-  task   Task   @relation(fields: [taskId], references: [id])
+  status String    @default("open") // open | done
+  doneAt DateTime?
 
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
   @@index([taskId])
   @@index([userId])
 }
@@ -91,26 +105,26 @@ model TaskTag {
   id     String @id @default(cuid())
   taskId String
   tagId  String
-  tag    Tag    @relation(fields: [tagId], references: [id])
-  task   Task   @relation(fields: [taskId], references: [id])
+
+  tag  Tag  @relation(fields: [tagId], references: [id])
+  task Task @relation(fields: [taskId], references: [id])
 
   @@index([taskId])
   @@index([tagId])
 }
 
 model Thread {
-  id String @id @default(cuid())
-
-  // твоя колонка — сохраняю как есть
+  id    String @id @default(cuid())
   title String
 
-  // добавлено для 1–1 чатов
-  aId String
-  bId String
-  a   User   @relation("ThreadA", fields: [aId], references: [id])
-  b   User   @relation("ThreadB", fields: [bId], references: [id])
+  // были обязательные -> стали опциональные, чтобы не падать при удалении юзера
+  aId String?
+  bId String?
 
-  // служебные поля для быстрых списков/бейджей
+  a User? @relation("ThreadA", fields: [aId], references: [id], onDelete: SetNull)
+  b User? @relation("ThreadB", fields: [bId], references: [id], onDelete: SetNull)
+
+  // служебные поля
   lastMessageAt   DateTime?
   lastMessageText String?
 
@@ -118,7 +132,6 @@ model Thread {
   messages Message[]
   reads    ChatRead[]
 
-  // одна пара — один тред (пару сортируем в коде)
   @@unique([aId, bId], map: "thread_pair_unique")
   @@index([lastMessageAt, id], map: "thread_last_idx")
 }
@@ -127,28 +140,56 @@ model Message {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
   text      String
-  authorId  String
-  threadId  String
+
+  // было: String -> стало опционально + SetNull
+  authorId String?
+  threadId String
 
   thread Thread @relation(fields: [threadId], references: [id])
-  author User   @relation("MessageAuthor", fields: [authorId], references: [id])
+  author User?  @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: SetNull)
 
   @@index([threadId, createdAt], map: "msg_thread_time_idx")
   @@index([authorId], map: "msg_author_idx")
 }
 
 model ChatRead {
-  // оставляю твой id, ничего не меняю
   id         String   @id @default(cuid())
   threadId   String
   userId     String
   lastReadAt DateTime @default(now())
 
-  // добавил явные связи — это удобно для include/Studio
-  thread Thread @relation(fields: [threadId], references: [id])
-  user   User   @relation(fields: [userId], references: [id])
+  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([threadId, userId])
   @@index([userId], map: "read_user_idx")
   @@index([threadId], map: "read_thread_idx")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

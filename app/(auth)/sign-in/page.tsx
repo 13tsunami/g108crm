@@ -17,7 +17,7 @@ export default function SignInPage() {
       redirect: true,
       username,
       password,
-      callbackUrl: "/teachers",
+      callbackUrl: "/dashboard", // ⬅️ было "/teachers"
     });
   }
 

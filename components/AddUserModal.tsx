@@ -20,19 +20,16 @@ export default function AddUserModal({
         mode="create"
         initialValues={{
           name: "",
-          username: "",   // логин обязателен при создании
+          username: "",
           email: "",
           phone: "",
           classroom: "",
           roleSlug: "teacher",
           birthday: null,
           telegram: "",
-          avatarUrl: "",
           about: "",
           notifyEmail: false,
           notifyTelegram: false,
-          subjects: [],
-          methodicalGroups: [],
           password: "",
         }}
         onSuccess={() => {

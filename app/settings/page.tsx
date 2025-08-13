@@ -13,12 +13,9 @@ type MeDTO = {
   role: string | null;
   birthday: string | null;
   telegram?: string | null;
-  avatarUrl?: string | null;
   about?: string | null;
   notifyEmail?: boolean;
   notifyTelegram?: boolean;
-  subjects?: string[];
-  methodicalGroups?: string[];
 };
 
 export default function SettingsPage() {
@@ -43,22 +40,33 @@ export default function SettingsPage() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
   return (
-    <div className="section">
-      <h2 className="text-xl font-semibold mb-3">Настройки профиля</h2>
+    <div style={{ padding: 12 }}>
+      <h2 style={{ fontSize: 20, fontWeight: 600, margin: "0 0 12px" }}>Настройки профиля</h2>
 
       {loading && <div>Загрузка…</div>}
       {!loading && err && (
-        <div className="rounded border border-red-300 bg-red-50 text-red-800 p-3 mb-3">
+        <div
+          style={{
+            borderRadius: 10,
+            border: "1px solid #fecaca",
+            background: "#fef2f2",
+            color: "#b91c1c",
+            padding: 12,
+            marginBottom: 12,
+          }}
+        >
           Не удалось загрузить профиль. {err}
         </div>
       )}
 
       {!loading && me && (
         <>
-          <div className="mb-3 text-sm text-neutral-600">
+          <div style={{ marginBottom: 12, fontSize: 13, color: "#4b5563" }}>
             Роль, классное руководство и логин меняются руководством в разделе «Педагоги».
           </div>
 
@@ -74,12 +82,9 @@ export default function SettingsPage() {
               roleSlug: me.role ?? undefined,
               birthday: me.birthday,
               telegram: me.telegram ?? "",
-              avatarUrl: me.avatarUrl ?? "",
               about: me.about ?? "",
               notifyEmail: !!me.notifyEmail,
               notifyTelegram: !!me.notifyTelegram,
-              subjects: me.subjects ?? [],
-              methodicalGroups: me.methodicalGroups ?? [],
             }}
             forbid={["role", "classroom", "password", "username"]}
             allowRoleChange={false}
@@ -87,7 +92,24 @@ export default function SettingsPage() {
           />
 
           <div style={{ height: 12 }} />
-          <a href="/profile/change-password" className="btn">Сменить пароль</a>
+          <a
+            href="/profile/change-password"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              height: 36,
+              padding: "0 12px",
+              fontSize: 14,
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              background: "#fff",
+              textDecoration: "none",
+              color: "#111827",
+            }}
+          >
+            Сменить пароль
+          </a>
         </>
       )}
     </div>

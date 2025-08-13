@@ -1,60 +1,77 @@
 // app/api/chat/threads/[id]/read/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { pushThreadUpdated } from "../../../_bus";
-const prisma = new PrismaClient();
+import { cookies } from "next/headers";
 
-function uid(req: NextRequest) {
-  const v = req.headers.get("x-user-id");
-  if (!v) throw new Error("Unauthorized");
-  return String(v);
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const g = globalThis as any;
+const prisma: PrismaClient = g.prisma ?? new PrismaClient();
+if (!g.prisma) g.prisma = prisma;
+
+function bad(msg: string, status = 400) {
+  return NextResponse.json({ ok: false, error: msg }, { status });
 }
 
-export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
+async function getMeId(req: NextRequest) {
+  const hdr = req.headers.get("x-user-id");
+  if (hdr && typeof hdr === "string" && hdr.trim()) return hdr.trim();
+  const c = await cookies();
+  return c.get("uid")?.value ?? null;
+}
+
+// GET — страница ожидает { myReadAt, peerReadAt }
+export async function GET(req: NextRequest, { params }: { params: { id?: string } }) {
+  const threadId = params?.id;
+  if (!threadId) return bad("threadId is required", 400);
+
+  const meId = await getMeId(req);
+  if (!meId) return bad("Not authenticated (user id missing)", 401);
+
   try {
-    const userId = uid(req);
-    const threadId = ctx.params.id;
+    const t = await prisma.thread.findUnique({
+      where: { id: threadId },
+      select: { aId: true, bId: true },
+    });
+    if (!t) return NextResponse.json({ myReadAt: null, peerReadAt: null });
 
-    const t = await prisma.thread.findUnique({ where: { id: threadId } });
-    if (!t) return NextResponse.json({ error: "Thread not found" }, { status: 404 });
-    if (t.aId !== userId && t.bId !== userId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const peerId = t.aId === meId ? t.bId : t.bId === meId ? t.aId : null;
 
-    const me = await prisma.chatRead.findUnique({ where: { threadId_userId: { threadId, userId } } });
-    const otherId = t.aId === userId ? t.bId : t.aId;
-    const peer = await prisma.chatRead.findUnique({ where: { threadId_userId: { threadId, userId: otherId } } });
+    const [my, peer] = await Promise.all([
+      prisma.chatRead.findUnique({ where: { threadId_userId: { threadId, userId: meId } }, select: { lastReadAt: true } }),
+      peerId
+        ? prisma.chatRead.findUnique({ where: { threadId_userId: { threadId, userId: peerId } }, select: { lastReadAt: true } })
+        : Promise.resolve(null),
+    ]);
 
     return NextResponse.json({
-      myReadAt: me?.lastReadAt ? me.lastReadAt.toISOString() : null,
-      peerReadAt: peer?.lastReadAt ? peer.lastReadAt.toISOString() : null,
+      myReadAt: my?.lastReadAt?.toISOString() ?? null,
+      peerReadAt: peer?.lastReadAt?.toISOString() ?? null,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+  } catch (e) {
+    console.error("thread read GET error:", e);
+    return NextResponse.json({ myReadAt: null, peerReadAt: null });
   }
 }
 
-export async function POST(req: NextRequest, ctx: { params: { id: string } }) {
+// POST — пометить тред прочитанным для меня
+export async function POST(req: NextRequest, { params }: { params: { id?: string } }) {
+  const threadId = params?.id;
+  if (!threadId) return bad("threadId is required", 400);
+
+  const meId = await getMeId(req);
+  if (!meId) return bad("Not authenticated (user id missing)", 401);
+
   try {
-    const userId = uid(req);
-    const threadId = ctx.params.id;
-
-    const t = await prisma.thread.findUnique({ where: { id: threadId } });
-    if (!t) return NextResponse.json({ error: "Thread not found" }, { status: 404 });
-    if (t.aId !== userId && t.bId !== userId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
-    const now = new Date();
     await prisma.chatRead.upsert({
-      where: { threadId_userId: { threadId, userId } },
-      update: { lastReadAt: now },
-      create: { threadId, userId, lastReadAt: now },
+      where: { threadId_userId: { threadId, userId: meId } },
+      create: { threadId, userId: meId, lastReadAt: new Date() },
+      update: { lastReadAt: new Date() },
     });
-
-    // обновим списки у обоих
-    const otherId = t.aId === userId ? t.bId : t.aId;
-    pushThreadUpdated(userId, threadId);
-    pushThreadUpdated(otherId, threadId);
-
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+  } catch (e) {
+    console.error("thread read POST error:", e);
+    return NextResponse.json({ ok: false, error: "Internal error" }, { status: 500 });
   }
 }
