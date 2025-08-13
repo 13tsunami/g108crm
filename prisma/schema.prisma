@@ -61,6 +61,13 @@ model GroupMember {
   @@index([userId])
 }
 
+model Subject {
+  id   String @id @default(cuid())
+  name String @unique
+
+  @@index([name])
+}
+
 model Task {
   id          String   @id @default(cuid())
   seq         Int? // сквозной номер

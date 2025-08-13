@@ -55,7 +55,7 @@ function isOnline(lastSeen?: string | null, thresholdMin = 5) {
 }
 
 function Btn(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  const { className, style, ...rest } = props;
+  const { style, ...rest } = props;
   return (
     <button
       {...rest}
@@ -99,26 +99,30 @@ function LockIcon() {
   );
 }
 
-/* -------------------- МИНИ-ХЕЛПЕРЫ (только чтобы не падать на .join) -------------------- */
+/* -------------------- ХЕЛПЕРЫ -------------------- */
 function toNameList(input: any): string[] {
   if (input == null) return [];
   if (Array.isArray(input)) {
     if (!input.length) return [];
     if (typeof input[0] === "string") {
-      return (input as string[]).map(s => String(s).trim()).filter(Boolean);
+      return (input as string[]).map((s) => String(s).trim()).filter(Boolean);
     }
     return (input as any[])
-      .map(x => x?.name ?? x?.title ?? x?.label ?? x?.value ?? x)
-      .map(s => String(s ?? "").trim())
+      .map((x) => x?.name ?? x?.title ?? x?.label ?? x?.value ?? x)
+      .map((s) => String(s ?? "").trim())
       .filter(Boolean);
   }
   if (typeof input === "string") {
     const raw = input.trim();
     if (!raw) return [];
     if (raw.startsWith("[") || raw.startsWith("{")) {
-      try { return toNameList(JSON.parse(raw)); } catch { /* fallthrough to CSV */ }
+      try {
+        return toNameList(JSON.parse(raw));
+      } catch {
+        /* fallthrough */
+      }
     }
-    return raw.split(/[,;\/|]+/g).map(s => s.trim()).filter(Boolean);
+    return raw.split(/[,;\/|]+/g).map((s) => s.trim()).filter(Boolean);
   }
   const s = String(input?.name ?? input?.title ?? input?.label ?? input?.value ?? "").trim();
   return s ? [s] : [];
@@ -126,7 +130,7 @@ function toNameList(input: any): string[] {
 
 /* -------------------- СТРАНИЦА -------------------- */
 export default function Page() {
-  const { data } = useSession();
+  const { data, status } = useSession();
   const mySlug = (data?.user as any)?.role as string | undefined;
   const canManage = mySlug === "director" || mySlug === "deputy_plus";
 
@@ -156,13 +160,19 @@ export default function Page() {
       let r = await fetch("/api/users", { cache: "no-store" });
       let t = await r.text();
       let arr: RowUser[] = [];
-      try { arr = JSON.parse(t); } catch {}
+      try {
+        arr = JSON.parse(t);
+      } catch {}
 
-      // Фолбэк на /api/teachers (твоя ошибка 404 указывала на этот путь)
+      // Фолбэк
       if (!r.ok || !Array.isArray(arr)) {
         r = await fetch("/api/teachers", { cache: "no-store" });
         t = await r.text();
-        try { arr = JSON.parse(t); } catch { arr = []; }
+        try {
+          arr = JSON.parse(t);
+        } catch {
+          arr = [];
+        }
       }
       setUsers(Array.isArray(arr) ? arr : []);
     } finally {
@@ -192,7 +202,13 @@ export default function Page() {
         try {
           j = t ? JSON.parse(t) : null;
         } catch {}
-        const arr: any[] = Array.isArray(j) ? j : Array.isArray(j?.list) ? j.list : Array.isArray(j?.users) ? j.users : [];
+        const arr: any[] = Array.isArray(j)
+          ? j
+          : Array.isArray(j?.list)
+          ? j.list
+          : Array.isArray(j?.users)
+          ? j.users
+          : [];
         if (!alive) return;
         const map: Presence = {};
         for (const it of arr) if (it && typeof it.id === "string") map[it.id] = it.lastSeen ?? null;
@@ -236,31 +252,46 @@ export default function Page() {
     setExpandedId((prev) => (prev === id ? null : id));
     if (!details[id]) {
       try {
-        // основной путь
+        // основной путь — детали пользователя
         let r = await fetch(`/api/users/${id}`, { cache: "no-store" });
         let t = await r.text();
         let j: any = null;
-        try { j = t ? JSON.parse(t) : null; } catch {}
+        try {
+          j = t ? JSON.parse(t) : null;
+        } catch {}
         let payload = j?.user ?? j?.data ?? j;
 
-        // фолбэк на /api/teachers/:id
+        // фолбэк
         if (!r.ok || !payload || payload.error) {
           r = await fetch(`/api/teachers/${id}`, { cache: "no-store" });
           t = await r.text();
           j = null;
-          try { j = t ? JSON.parse(t) : null; } catch {}
+          try {
+            j = t ? JSON.parse(t) : null;
+          } catch {}
           payload = j?.user ?? j?.data ?? j;
         }
 
+        // ДОТЯГИВАЕМ ГРУППЫ ИЗ БАЗЫ (а не из lib/edu)
+        let groupsNames: string[] = [];
+        try {
+          const gr = await fetch(`/api/users/${id}/groups`, { cache: "no-store" });
+          if (gr.ok) {
+            const arr = await gr.json();
+            if (Array.isArray(arr)) groupsNames = (arr as any[]).map((x) => String(x)).filter(Boolean);
+          }
+        } catch {}
+
         if (payload && !payload.error) {
-          setDetails((prev) => ({ ...prev, [id]: payload as RowUser }));
+          const merged: RowUser = { ...(payload as RowUser) };
+          if (groupsNames.length) merged.methodicalGroups = groupsNames;
+          setDetails((prev) => ({ ...prev, [id]: merged }));
         }
       } catch {}
     }
   }
 
   async function doDelete() {
-    // без изменений
     if (!delId || delLoading) return;
     setDelLoading(true);
     setDelErr(null);
@@ -290,7 +321,6 @@ export default function Page() {
   }
 
   async function doArchive() {
-    // без изменений
     if (!delId || archLoading) return;
     setArchLoading(true);
     setArchErr(null);
@@ -340,7 +370,15 @@ export default function Page() {
         {canManage && (
           <>
             <BtnPrimary onClick={() => setAddOpen(true)}>Добавить</BtnPrimary>
-            <Btn onClick={() => { setDelErr(null); setArchErr(null); setCanArchive(false); setDelId(""); setDelOpen(true); }}>
+            <Btn
+              onClick={() => {
+                setDelErr(null);
+                setArchErr(null);
+                setCanArchive(false);
+                setDelId("");
+                setDelOpen(true);
+              }}
+            >
               Удалить
             </Btn>
           </>
@@ -446,8 +484,7 @@ export default function Page() {
                         <strong>Telegram:</strong> {d.telegram || "—"}
                       </div>
                       <div>
-                        <strong>Дата рождения:</strong>{" "}
-                        {d.birthday ? new Date(d.birthday).toLocaleDateString() : "—"}
+                        <strong>Дата рождения:</strong> {d.birthday ? new Date(d.birthday).toLocaleDateString() : "—"}
                       </div>
                       {d.username && (
                         <div>
@@ -457,12 +494,10 @@ export default function Page() {
                     </div>
                     <div style={{ display: "grid", gap: 6 }}>
                       <div>
-                        <strong>Предметы:</strong>{" "}
-                        {subjectsList.length ? subjectsList.join(", ") : "—"}
+                        <strong>Предметы:</strong> {subjectsList.length ? subjectsList.join(", ") : "—"}
                       </div>
                       <div>
-                        <strong>Методические объединения:</strong>{" "}
-                        {methodicalList.length ? methodicalList.join(", ") : "—"}
+                        <strong>Методические объединения:</strong> {methodicalList.length ? methodicalList.join(", ") : "—"}
                       </div>
                       <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
                         {d.avatarUrl ? (
@@ -486,25 +521,16 @@ export default function Page() {
             </div>
           );
         })}
-        {!filtered.length && (
-          <div style={{ padding: 24, color: "#6b7280" }}>Ничего не найдено</div>
-        )}
+        {!filtered.length && <div style={{ padding: 24, color: "#6b7280" }}>Ничего не найдено</div>}
       </div>
 
       {addOpen && <AddUserModal open={addOpen} onClose={() => setAddOpen(false)} onAdded={load} />}
 
       {editUser && (
-        <EditUserModal
-          user={editUser}
-          onClose={() => setEditUser(null)}
-          onSaved={load}
-          allowRoleChange={canManage}
-        />
+        <EditUserModal user={editUser} onClose={() => setEditUser(null)} onSaved={load} allowRoleChange={canManage} />
       )}
 
-      {forceUser && (
-        <ForcePasswordModal user={forceUser} onClose={() => setForceUser(null)} onDone={load} />
-      )}
+      {forceUser && <ForcePasswordModal user={forceUser} onClose={() => setForceUser(null)} onDone={load} />}
 
       {delOpen && (
         <div

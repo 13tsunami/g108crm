@@ -1,0 +1,27 @@
+{
+  "posts": [
+    {
+      "id": "1dc5178d-f589-4ba3-8102-301150eeee42",
+      "authorId": "cme6zvem80005v3q0x7mnyycb",
+      "authorName": "Евжик Иван Сергеевич",
+      "title": "334",
+      "text": "апап3434",
+      "createdAt": "2025-08-13T13:10:12.115Z",
+      "attachments": [],
+      "votes": {
+        "cme6zvelp0002v3q07utu9jrz": 1
+      },
+      "comments": [
+        {
+          "id": "baa55e60-dda2-4951-a8e7-3c247d7951a2",
+          "postId": "1dc5178d-f589-4ba3-8102-301150eeee42",
+          "authorId": "cme6zvelp0002v3q07utu9jrz",
+          "authorName": "Фартушный Владислав Сергеевич",
+          "text": "Ну такое",
+          "createdAt": "2025-08-13T13:14:23.603Z",
+          "votes": {}
+        }
+      ]
+    }
+  ]
+}

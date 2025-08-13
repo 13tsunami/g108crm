@@ -1,38 +1,58 @@
 // app/api/groups/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 
-export const runtime = "nodejs";
+const prisma = (global as any).prisma ?? new PrismaClient();
+if (process.env.NODE_ENV !== "production") (global as any).prisma = prisma;
+
 export const dynamic = "force-dynamic";
 
-const g = globalThis as any;
-const prisma: PrismaClient = g.prisma ?? new PrismaClient();
-if (!g.prisma) g.prisma = prisma;
-
-export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  const q = (url.searchParams.get("q") ?? "").trim();
-  const limit = Math.min(2000, Math.max(1, parseInt(url.searchParams.get("limit") ?? "1000", 10) || 1000));
-
-  const where: any = q ? { name: { contains: q, mode: "insensitive" } } : {};
-
-  const groups = await prisma.group.findMany({
-    where,
-    select: { id: true, name: true },
-    orderBy: [{ name: "asc" }, { id: "asc" }],
-    take: limit,
-  });
-
-  // Страница задач ждёт простой массив {id,name}
-  return NextResponse.json(groups, { status: 200 });
+function canManage(role?: string | null) {
+  const s = (role ?? "").toLowerCase();
+  return s === "director" || s === "deputy_plus";
 }
 
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    },
+async function getSessionRole(): Promise<string | undefined> {
+  try {
+    const session: any = await getServerSession(authOptions as any);
+    const r = session?.user?.role ?? session?.user?.roleSlug ?? null;
+    return typeof r === "string" ? r : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// GET /api/groups?limit=5000
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const limitRaw = url.searchParams.get("limit");
+  const limitNum = Number(limitRaw);
+  const limit = Number.isFinite(limitNum) ? Math.min(limitNum, 10_000) : 1000;
+
+  const list = await prisma.group.findMany({
+    orderBy: { name: "asc" },
+    take: limit,
+    select: { id: true, name: true },
   });
+  return NextResponse.json(list);
+}
+
+// POST /api/groups { name }
+export async function POST(req: Request) {
+  const role = await getSessionRole();
+  if (!canManage(role)) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown };
+  const raw = String(body?.name ?? "").trim();
+  if (!raw) return NextResponse.json({ error: "name required" }, { status: 400 });
+
+  const exists = await prisma.group.findFirst({ where: { name: raw }, select: { id: true } });
+  if (exists) return NextResponse.json({ id: exists.id, name: raw }, { status: 200 });
+
+  const g = await prisma.group.create({ data: { name: raw }, select: { id: true, name: true } });
+  return NextResponse.json(g, { status: 201 });
 }

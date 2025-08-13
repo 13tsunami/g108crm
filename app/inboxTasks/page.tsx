@@ -1,26 +1,31 @@
-// app/inboxTasks/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import TaskForm from "@/components/TaskForm";
+import Link from "next/link";
 
 type Task = {
   id: string;
   title: string;
   description?: string | null;
-  dueDate?: string | null;                 // ISO
+  dueDate?: string | null;
   priority?: "high" | "normal" | string;
-  hidden?: boolean;                        // «не публиковать в календаре»
-  // варианты формата исполнителей из API:
+  hidden?: boolean;
   assignedTo?: Array<{ type?: "user"; id: string }>;
   assignees?: Array<{ userId: string; status?: string; doneAt?: string | null }>;
-  // расширения:
-  createdBy?: string | null;               // id автора (кто назначил)
-  seq?: number;                            // сквозной номер
+  createdBy?: string | null;
+  createdById?: string | null;
+  seq?: number;
 };
 
-type SimpleUser = { id: string; name: string | null; role?: string | null };
+type SimpleUser = {
+  id: string;
+  name: string | null;
+  role?: string | null;
+  methodicalGroups?: string | null;
+};
+
 type SimpleGroup = { id: string; name: string };
 
 type ProgressPayload = {
@@ -48,6 +53,33 @@ function tsOf(iso?: string | null) {
   return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
 }
 
+function mapRoleStrict(slugOrRaw?: string | null): string | null {
+  const s = (slugOrRaw ?? "")
+    .toLowerCase()
+    .replace(/\s*\+\s*/g, "+")
+    .trim();
+
+  if (s === "director" || s === "директор") return "Директор";
+  if (s === "deputy_plus" || s === "deputy+" || s === "заместитель+" || s === "заместитель плюс") return "Заместитель+";
+  if (s === "deputy" || s === "заместитель") return "Заместитель";
+  if (s === "teacher_plus" || s === "teacher+" || s === "учитель+" || s === "педагог+" || s === "педагог плюс")
+    return "Педагог +";
+  if (s === "teacher" || s === "учитель" || s === "педагог") return "Педагог";
+  return null;
+}
+
+function mgToString(mg: unknown): string | null {
+  if (Array.isArray(mg)) {
+    const vals = mg.map((x) => String(x ?? "").trim()).filter(Boolean);
+    return vals.length ? vals.join(", ") : null;
+  }
+  if (typeof mg === "string") {
+    const s = mg.trim();
+    return s.length ? s : null;
+  }
+  return null;
+}
+
 export default function InboxTasksPage() {
   const { data: session, status } = useSession();
   const meId = (session?.user as any)?.id as string | undefined;
@@ -63,14 +95,40 @@ export default function InboxTasksPage() {
   const pollRef = useRef<number | null>(null);
 
   async function loadUsers() {
-  try {
-    // важно: includeSelf=1 — чтобы текущий пользователь тоже был в списке
-    const r = await fetch("/api/chat/users?includeSelf=1&limit=2000", { cache: "no-store" });
-    if (!r.ok) return;
-    const list = await r.json();
-    if (Array.isArray(list)) setUsers(list);
-  } catch {}
-}
+    try {
+      const rChat = await fetch("/api/chat/users?includeSelf=1&limit=2000", { cache: "no-store" });
+      const base = rChat.ok ? await rChat.json() : [];
+      const byId = new Map<string, SimpleUser>();
+      if (Array.isArray(base)) {
+        base.forEach((u: any) => {
+          if (!u?.id) return;
+          byId.set(u.id, { id: u.id, name: u.name ?? null });
+        });
+      }
+      try {
+        const rUsers = await fetch("/api/users", { cache: "no-store" });
+        if (rUsers.ok) {
+          const extras = await rUsers.json();
+          if (Array.isArray(extras)) {
+            extras.forEach((e: any) => {
+              if (!e?.id) return;
+              const prev = byId.get(e.id) ?? { id: e.id, name: e.name ?? null };
+              const roleLabel = mapRoleStrict(e.roleSlug) ?? mapRoleStrict(e.role);
+              byId.set(e.id, {
+                id: e.id,
+                name: prev.name ?? e.name ?? null,
+                role: roleLabel ?? undefined,
+                methodicalGroups: mgToString(e.methodicalGroups) ?? undefined,
+              });
+            });
+          }
+        }
+      } catch {}
+      setUsers(Array.from(byId.values()));
+    } catch {
+      setUsers([]);
+    }
+  }
 
   async function loadGroups() {
     const endpoints = ["/api/groups", "/api/chat/groups", "/api/user-groups"];
@@ -85,6 +143,7 @@ export default function InboxTasksPage() {
     }
     setGroups([]);
   }
+
   async function loadTasks() {
     try {
       const r = await fetch("/api/tasks", { cache: "no-store" });
@@ -134,32 +193,39 @@ export default function InboxTasksPage() {
     }
     return [];
   }
+  function myAssigneeStatus(t: Task, myId?: string | null): string | null {
+    if (!myId) return null;
+    const rec = (t.assignees || []).find(a => a.userId === myId);
+    return rec?.status ?? null;
+  }
   function assigneeNamesOf(t: Task): string[] {
     return assigneeIdsOf(t).map(id => usersById.get(id) || id);
-  }
-  function summaryNames(names: string[], max = 2) {
-    if (names.length <= max) return names.join(", ");
-    const head = names.slice(0, max).join(", ");
-    return `${head} +${names.length - max}`;
   }
 
   const toMeList = useMemo(() => {
     if (!meId) return [];
-    return sorted.filter(t => assigneeIdsOf(t).includes(meId));
+    return sorted.filter(t => assigneeIdsOf(t).includes(meId) && myAssigneeStatus(t, meId) !== "done");
   }, [sorted, meId]);
   const byMeList = useMemo(() => {
     if (!meId) return [];
-    return sorted.filter(t => t.createdBy === meId);
+    return sorted.filter(t => t.createdById === meId || t.createdBy === meId || (t.createdBy as any) === meId);
   }, [sorted, meId]);
-
   const view = tab === "toMe" ? toMeList : byMeList;
 
-  // Сброс раскрытой плитки при смене вкладки
   useEffect(() => { setExpandedId(null); }, [tab]);
+
+  // синхронизация счётчика «Назначенные мне» в localStorage + событие для сайдбара
+  useEffect(() => {
+    if (!meId) return;
+    try {
+      localStorage.setItem(`tasks:u:${meId}:toMeCount`, String(toMeList.length));
+      window.dispatchEvent(new Event("g108:tasks-count-updated"));
+    } catch {}
+  }, [toMeList.length, meId]);
 
   function goClarify(assignerId?: string | null, seq?: number) {
     if (!assignerId) {
-      alert("Не удалось определить автора задачи — «Уточнить» станет доступно после миграции createdBy.");
+      alert("Не удалось определить автора задачи — «Уточнить» станет доступно после миграции createdById.");
       return;
     }
     const msg = `Добрый день, ${usersById.get(assignerId) || ""}, уточнение по задаче №${seq ?? "—"}`;
@@ -211,54 +277,129 @@ export default function InboxTasksPage() {
     setProgressLoading(false);
   }
 
+  async function editTask(task: Task) {
+    const title = window.prompt("Название задачи:", task.title);
+    if (!title) return;
+
+    const description = task.description ?? "";
+    const dueDateInput = (window.prompt("Срок (ISO, напр. 2025-08-15):", task.dueDate ?? "") || task.dueDate) ?? null;
+    const hidden = window.confirm("Скрыть из календаря? ОК — скрыть, Отмена — оставить как есть.")
+      ? true
+      : (task.hidden ?? false);
+    const priority = window.confirm("Сделать срочной? ОК — срочно, Отмена — обычная.")
+      ? "high"
+      : (task.priority ?? "normal");
+
+    const r = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, description, dueDate: dueDateInput, hidden, priority }),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      alert(`Не удалось сохранить: ${t || r.status}`);
+      return;
+    }
+    await loadTasks();
+  }
+
+  async function removeTask(taskId: string) {
+    const ok = window.confirm("Удалить задачу без возможности восстановления?");
+    if (!ok) return;
+    const r = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+    if (!r.ok && r.status !== 404 && r.status !== 410) {
+      const t = await r.text().catch(() => "");
+      alert(`Не удалось удалить: ${t || r.status}`);
+      return;
+    }
+    await loadTasks();
+  }
+
   if (status !== "authenticated") {
     return <section style={{ padding: 16, fontFamily: '"Times New Roman", serif', fontSize: 12 }}>Нужна авторизация, чтобы работать с задачами.</section>;
   }
 
+  const toMeCount = toMeList.length;
+
   return (
     <section style={{ fontFamily: '"Times New Roman", serif', fontSize: 12 }}>
       <div style={{ display: "grid", gridTemplateColumns: "380px 1fr", gap: 16 }}>
-        {/* Левая колонка — форма */}
         <div className="card" style={{ padding: 16 }}>
           <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>Новая задача</div>
           <TaskForm users={users} groups={groups} onCreated={() => loadTasks()} />
         </div>
 
-        {/* Правая колонка — список */}
         <div className="card" style={{ padding: 0, display: "flex", flexDirection: "column", minHeight: 420 }}>
-          {/* Переключатель вкладок */}
-          <div style={{ padding: 12, borderBottom: "1px solid #e5e7eb", display: "flex", gap: 8 }}>
-            <button
-              type="button"
-              onClick={() => setTab("toMe")}
+          <div style={{ padding: 12, borderBottom: "1px solid #e5e7eb", display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => setTab("toMe")}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 10px",
+                  borderRadius: 10,
+                  border: tab === "toMe" ? "1px solid #e5e7eb" : "1px solid transparent",
+                  background: tab === "toMe" ? "#f9fafb" : "transparent",
+                  cursor: "pointer",
+                  fontWeight: 800
+                }}
+              >
+                <span>Назначенные мне</span>
+                {toMeCount > 0 && (
+                  <span
+                    aria-label={`${toMeCount} задач`}
+                    title={`${toMeCount} задач`}
+                    style={{
+                      fontSize: 11,
+                      lineHeight: "18px",
+                      minWidth: 22,
+                      textAlign: "center",
+                      padding: "0 6px",
+                      borderRadius: 9999,
+                      background: BRAND,
+                      color: "#fff"
+                    }}
+                  >
+                    {toMeCount > 99 ? "99+" : toMeCount}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTab("byMe")}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 10,
+                  border: tab === "byMe" ? "1px solid #e5e7eb" : "1px solid transparent",
+                  background: tab === "byMe" ? "#f9fafb" : "transparent",
+                  cursor: "pointer",
+                  fontWeight: 800
+                }}
+              >
+                Мои назначения
+              </button>
+            </div>
+
+            <Link
+              href="/archive_tasks"
               style={{
                 padding: "6px 10px",
                 borderRadius: 10,
-                border: tab === "toMe" ? "1px solid #e5e7eb" : "1px solid transparent",
-                background: tab === "toMe" ? "#f9fafb" : "transparent",
-                cursor: "pointer",
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                textDecoration: "none",
+                color: "#111827",
                 fontWeight: 800
               }}
             >
-              Назначенные мне
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("byMe")}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 10,
-                border: tab === "byMe" ? "1px solid #e5e7eb" : "1px solid transparent",
-                background: tab === "byMe" ? "#f9fafb" : "transparent",
-                cursor: "pointer",
-                fontWeight: 800
-              }}
-            >
-              Мои назначения
-            </button>
+              Архив выполненных задач
+            </Link>
           </div>
 
-          {/* Список — снизу вверх */}
           <div
             style={{
               display: "flex",
@@ -274,11 +415,10 @@ export default function InboxTasksPage() {
             )}
 
             {view.map((t) => {
-              const names = assigneeNamesOf(t);
               const urgent = (t.priority || "normal") === "high";
               const expanded = expandedId === t.id;
               const mine = meId ? assigneeIdsOf(t).includes(meId) : false;
-              const byMe = meId ? t.createdBy === meId : false;
+              const byMe = meId ? t.createdById === meId : false;
 
               return (
                 <div
@@ -291,7 +431,6 @@ export default function InboxTasksPage() {
                     transition: "background 120ms ease, border-color 120ms ease"
                   }}
                 >
-                  {/* Компактная шапка плитки */}
                   <button
                     type="button"
                     onClick={() => setExpandedId(expanded ? null : t.id)}
@@ -313,11 +452,10 @@ export default function InboxTasksPage() {
                       №{t.seq ?? "—"} · {t.title}
                     </span>
                     <span style={{ fontSize: 12, color: "#6b7280" }}>
-                      {t.createdBy ? `назначил: ${usersById.get(t.createdBy) || t.createdBy}` : "назначивший: —"}
+                      {t.createdById ? `назначил: ${usersById.get(t.createdById) || t.createdById}` : "назначивший: —"}
                     </span>
                   </button>
 
-                  {/* Разворачиваемая часть */}
                   {expanded && (
                     <div id={`task-${t.id}`} style={{ padding: "0 12px 12px 12px" }}>
                       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
@@ -336,41 +474,54 @@ export default function InboxTasksPage() {
                         </div>
                       </div>
 
+                      {(() => {
+                        const names = assigneeNamesOf(t);
+                        return names.length > 0 ? (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 4 }}>Кому назначено:</div>
+                            {names.map((n, i) => (
+                              <span
+                                key={i}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  fontSize: 11,
+                                  border: "1px solid #e5e7eb",
+                                  padding: "2px 8px",
+                                  borderRadius: 999,
+                                  marginRight: 6,
+                                  marginTop: 4
+                                }}
+                              >
+                                {n}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null;
+                      })()}
+
                       {t.description && (
-                        <div style={{ marginTop: 8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        <div
+                          style={{
+                            marginTop: 8,
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            border: "1px solid #e5e7eb",
+                            background: "#fcfcfc",
+                            borderRadius: 10,
+                            padding: "8px 10px"
+                          }}
+                        >
                           {t.description}
                         </div>
                       )}
 
-                      {names.length > 0 && (
-                        <div style={{ marginTop: 8 }}>
-                          {names.map((n, i) => (
-                            <span
-                              key={i}
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                fontSize: 11,
-                                border: "1px solid #e5e7eb",
-                                padding: "2px 8px",
-                                borderRadius: 999,
-                                marginRight: 6,
-                                marginTop: 4
-                              }}
-                            >
-                              {n}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Кнопки по вкладкам */}
                       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
                         {tab === "byMe" && byMe && (
                           <>
                             <button
                               type="button"
-                              onClick={() => alert("Редактирование подключим после подтверждения API PUT /api/tasks/:id")}
+                              onClick={() => editTask(t)}
                               style={{
                                 height: 32, padding: "0 12px", borderRadius: 10, border: "1px solid #e5e7eb",
                                 background: "#fff", cursor: "pointer"
@@ -380,7 +531,7 @@ export default function InboxTasksPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => alert("Удаление подключим после подтверждения API DELETE /api/tasks/:id")}
+                              onClick={() => removeTask(t.id)}
                               style={{
                                 height: 32, padding: "0 12px", borderRadius: 10, border: `1px solid ${BRAND}`,
                                 background: BRAND, color: "#fff", cursor: "pointer"
@@ -415,7 +566,7 @@ export default function InboxTasksPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => goClarify(t.createdBy, t.seq)}
+                              onClick={() => goClarify(t.createdById, t.seq)}
                               style={{
                                 height: 32, padding: "0 12px", borderRadius: 10, border: "1px solid #e5e7eb",
                                 background: "#fff", cursor: "pointer"
@@ -435,20 +586,11 @@ export default function InboxTasksPage() {
         </div>
       </div>
 
-      {/* Стили карточек и hover-подсветки */}
       <style jsx>{`
-        .card {
-          background: #fff;
-          border: 1px solid #e5e7eb;
-          border-radius: 12px;
-        }
-        .tile:hover {
-          background: #fafafa;
-          border-color: #d1d5db;
-        }
+        .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; }
+        .tile:hover { background: #fafafa; border-color: #d1d5db; }
       `}</style>
 
-      {/* Модалка прогресса */}
       {progressFor && (
         <div
           onClick={closeProgress}
@@ -464,9 +606,7 @@ export default function InboxTasksPage() {
           >
             <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>Выполнили на данный момент</div>
 
-            {progressLoading && (
-              <div style={{ color: "#6b7280" }}>Загрузка...</div>
-            )}
+            {progressLoading && (<div style={{ color: "#6b7280" }}>Загрузка...</div>)}
 
             {!progressLoading && progressData && progressData.ok && (
               <>

@@ -16,11 +16,15 @@ type ThreadListItem = {
 };
 
 const BRAND = "#8d2828";
-
 const MONTHS_RU = ["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
 const fmt = (iso: string) => {
   const x = new Date(iso);
-  return `${String(x.getDate()).padStart(2,"0")} ${MONTHS_RU[x.getMonth()]} ${x.getFullYear()}, ${String(x.getHours()).padStart(2,"0")}:${String(x.getMinutes()).padStart(2,"0")}`;
+  const d = String(x.getDate()).padStart(2,"0");
+  const m = MONTHS_RU[x.getMonth()];
+  const Y = x.getFullYear();
+  const hh = String(x.getHours()).padStart(2,"0");
+  const mm = String(x.getMinutes()).padStart(2,"0");
+  return `${d} ${m} ${Y}, ${hh}:${mm}`;
 };
 
 const ls = (uid?: string) => ({ threads: `chat:u:${uid ?? "anon"}:threads`, last: `chat:u:${uid ?? "anon"}:last` });
@@ -39,7 +43,7 @@ function dedupeByPeer(list: ThreadListItem[]) {
   return arr;
 }
 
-// --- добавлено: серверный источник истины "кто я"
+// серверный источник истины "кто я"
 async function fetchMeFromServer(): Promise<{ id: string; name: string | null } | null> {
   try {
     const r = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
@@ -93,7 +97,7 @@ export default function ChatPage() {
   const paneRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const msgRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const justOpenedRef = useRef(false);
+
   const isNearBottom = () => {
     const el = paneRef.current; if (!el) return true;
     return el.scrollHeight - (el.scrollTop + el.clientHeight) < 120;
@@ -118,66 +122,118 @@ export default function ChatPage() {
   }
 
   const styles = (
-  <style>{`
-    .chat-root { display: grid; grid-template-columns: 360px 1fr; min-height: 560px; }
-    .threads { border-right: 1px solid #e5e7eb; font-size: 13px; }
-    .thread { width: 100%; text-align: left; padding: 8px 44px 8px 12px; border-radius: 12px; border: 1px solid #e5e7eb; background: #fff; position: relative; cursor: pointer; }
-    .thread + .thread { margin-top: 8px; }
-    .thread--active { background: #eef2ff; border-color: #c7e3ff; }
-    .thread--unread { background: #fff7ed; border-color: #fde68a; }
-    .thread--unread::before { content:""; position:absolute; left:-1px; top:-1px; bottom:-1px; width:4px; background:#ef9b28; border-top-left-radius:12px; border-bottom-left-radius:12px; }
-    .thread__last { color:#374151; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .thread__last--mine { text-align: right; }
-    .badge { position:absolute; right:30px; top:4px; font-size:10px; background:${BRAND}; color:#fff; padding:0 5px; border-radius:9999px; }
+    <style>{`
+      .glass {
+        background: rgba(255,255,255,0.55);
+        backdrop-filter: saturate(180%) blur(10px);
+        -webkit-backdrop-filter: saturate(180%) blur(10px);
+        border: 1px solid rgba(229,231,235,0.8);
+        border-radius: 12px;
+      }
 
-    .pane { display:grid; grid-template-rows: auto 1fr auto; }
-    .pane-header { position:relative; padding:12px 12px 6px; border-bottom:1px solid #e5e7eb; min-height: 56px; }
-    .pane-title { text-align:center; font-weight:700; }
-    .pane-typing { position:absolute; right:12px; top:34px; color:#6b7280; font-size:12px; }
-    .pane-search { position:absolute; right:12px; top:8px; width:220px; display:flex; gap:6px; }
-    .pane-search input { width:100%; padding:6px 8px; border:1px solid #e5e7eb; border-radius:8px; outline:none; }
-    .pane-search small { display:inline-block; min-width:42px; text-align:center; color:#6b7280; line-height:24px; }
-    .pane-body { padding:12px; overflow:auto; height: 62vh; scroll-behavior: smooth; }
-    .pane-footer { border-top:1px solid #e5e7eb; padding:12px; display:flex; gap:8px; align-items:flex-start; }
+      .chat-root { display: grid; grid-template-columns: 380px 1fr; min-height: 560px; gap: 12px; }
+      .threads { border-right: 0; font-size: 13px; padding: 12px; }
 
-    .btn-del { position:absolute; right:6px; top:6px; width:10px; height:10px; background:${BRAND}; color:#fff; border:none; border-radius:2px; font-weight:800; line-height:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
+      .block { padding: 12px; }
+      .block + .block { margin-top: 12px; }
+      .blockTitle { font-weight: 800; margin-bottom: 8px; }
 
-    .dd { position: fixed; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 16px rgba(0,0,0,.06), 0 4px 6px rgba(0,0,0,.04); z-index:60; max-height:260px; overflow:auto;}
-    .dd-item { width:100%; text-align:left; padding:8px 10px; border:0; background:transparent; cursor:pointer; }
+      /* плитка диалога — выше, аккуратнее, с кнопкой удаления */
+      .thread {
+        width: 100%;
+        text-align: left;
+        padding: 14px 72px 14px 12px;   /* больше воздуха и отступ справа под значки */
+        min-height: 76px;               /* ~1.5× выше */
+        border-radius: 12px;
+        border: 1px solid #e5e7eb;
+        background: #fff;
+        position: relative;
+        cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+      }
+      .thread + .thread { margin-top: 8px; }
+      .thread:hover { transform: translateY(-1px); border-color: #c7e3ff; }
+      .thread--active { background: #eef6ff; border-color: #c7e3ff; }
+      .thread--unread { background: #fff7ed; border-color: #fde68a; }
+      .thread--unread::before {
+        content:""; position:absolute; left:-1px; top:-1px; bottom:-1px; width:4px;
+        background:#ef9b28; border-top-left-radius:12px; border-bottom-left-radius:12px;
+      }
+      .thread__name { font-weight: 700; }
+      .thread__last { color:#374151; overflow:hidden; display:-webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+      .thread__last--mine { text-align: right; }
 
-    .msgRow { display:flex; margin-bottom:10px; }
-    .msgRow.mine { justify-content: flex-end; }
-    .msgCard { max-width: 72%; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:8px 10px; display:flex; flex-direction:column; }
-    .msgHead { display:flex; align-items:baseline; gap:6px; font-weight:700; }
-    .msgRow.mine .msgHead { justify-content:flex-end; text-align:right; }
-    .msgRow:not(.mine) .msgHead { justify-content:flex-start; text-align:left; }
-    .msgMeta { color:#6b7280; font-weight:400; }
-    .msgText { margin-top:6px; white-space: pre-wrap; word-break: break-word; }
-    .msgSep { border-top:1px solid #e5e7eb; margin-top:8px; }
+      /* индикатор непрочитанного не перекрывается */
+      .badge {
+        position:absolute; right: 44px; top: 8px;
+        font-size: 11px; background:${BRAND}; color:#fff;
+        padding: 0 7px; line-height: 20px; min-width: 22px; text-align:center;
+        border-radius:9999px; box-shadow:0 1px 4px rgba(0,0,0,.12); font-weight: 800;
+      }
 
-    .sendBtn { padding: 0 16px; border-radius: 10px; border: 1px solid ${BRAND}; background: ${BRAND}; color:#fff;
-               transition: transform .08s ease, box-shadow .08s ease, filter .08s ease; height: 64px; }
-    .sendBtn:hover { box-shadow: 0 3px 10px rgba(0,0,0,.18); transform: translateY(-1px); filter: blur(0.2px) saturate(105%); }
-    .sendBtn:active { transform: translateY(0); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-    .sendBtn:disabled { opacity:.6; cursor: default; filter:none; box-shadow:none; transform:none; }
+      /* аккуратная кнопка удаления, видна при hover */
+      .btn-del {
+        position:absolute; right: 8px; top: 8px;
+        width: 26px; height: 26px; border-radius: 8px;
+        border: 1px solid #e5e7eb; background: rgba(255,255,255,0.85);
+        display:inline-flex; align-items:center; justify-content:center;
+        cursor:pointer; color:#6b7280; opacity: 0; transition: opacity 120ms ease, background 120ms ease;
+      }
+      .thread:hover .btn-del, .btn-del:focus-visible { opacity: 1; }
+      .btn-del:hover { background: #fff; }
+      .btn-del svg { width: 14px; height: 14px; }
 
-    .plusBtn { width:40px; height:64px; border:1px dashed ${BRAND}; color:${BRAND}; background:#fff; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
-    .plusBtn:hover { background: #fff5f5; }
+      /* правая часть */
+      .pane { padding: 12px; display:grid; grid-template-rows: auto 1fr auto; gap: 12px; }
+      .pane-header { padding: 10px 12px; position:relative; min-height: 56px; display:flex; align-items:center; }
+      .pane-title { flex:1; text-align:center; font-weight:700; }
+      .pane-typing { position:absolute; right:12px; bottom:8px; color:#6b7280; font-size:12px; }
+      .pane-search { position:absolute; right:12px; top:8px; width:220px; display:flex; gap:6px; }
+      .pane-search input { width:100%; padding:6px 8px; border:1px solid #e5e7eb; border-radius:8px; outline:none; background:#fff; }
+      .pane-search small { display:inline-block; min-width:42px; text-align:center; color:#6b7280; line-height:24px; }
 
-    mark.chat-hl { background: #fef08a; padding: 0 2px; border-radius: 3px; }
-    .fileChip { display:inline-flex; align-items:center; gap:6px; border:1px solid #e5e7eb; border-radius:999px; padding:2px 8px; margin-top:6px; margin-right:6px; font-size:12px; }
-    .fileChip button { border:0; background:transparent; cursor:pointer; color:#6b7280; }
+      .pane-body { padding: 10px 12px; overflow: auto; height: 62vh; }
+      .pane-footer { padding: 10px 12px; display:flex; gap:8px; align-items:flex-start; }
 
-    .msgCard { backdrop-filter: blur(2px); }
-    .msgRow:not(.mine) .msgCard { background: rgba(169, 231, 255, 1); }
-    .msgRow.mine .msgCard { background: #e6ffea; }
-  `}</style>
-);
+      .dd { position: fixed; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 16px rgba(0,0,0,.06), 0 4px 6px rgba(0,0,0,.04); z-index:60; max-height:260px; overflow:auto;}
+      .dd-item { width:100%; text-align:left; padding:8px 10px; border:0; background:transparent; cursor:pointer; }
 
-  // мягкая зачистка старой dev-куки uid (если вдруг ставилась ранее)
-  useEffect(() => {
-    document.cookie = "uid=; Max-Age=0; path=/";
-  }, []);
+      /* сообщения */
+      .msgRow { display:flex; margin-bottom:10px; }
+      .msgRow.mine { justify-content: flex-end; }
+      .msgCard {
+        max-width: 72%;
+        background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:8px 10px; display:flex; flex-direction:column;
+        backdrop-filter: blur(2px);
+      }
+      .msgRow:not(.mine) .msgCard { background: rgba(169, 231, 255, 1); }
+      .msgRow.mine .msgCard { background: #e6ffea; }
+
+      .msgHead { display:flex; align-items:baseline; gap:6px; font-weight:700; }
+      .msgRow.mine .msgHead { justify-content:flex-end; text-align:right; }
+      .msgRow:not(.mine) .msgHead { justify-content:flex-start; text-align:left; }
+      .msgAuthor { font-weight: 800; }
+      .msgMeta { color:#6b7280; font-weight:400; }
+      .msgText { margin-top:6px; white-space: pre-wrap; word-break: break-word; }
+      .msgSep { border-top:1px solid #e5e7eb; margin-top:8px; }
+
+      .sendBtn { padding: 0 16px; border-radius: 10px; border: 1px solid ${BRAND}; background: ${BRAND}; color:#fff;
+                 transition: transform .08s ease, box-shadow .08s ease, filter .08s ease; height: 64px; }
+      .sendBtn:hover { box-shadow: 0 3px 10px rgba(0,0,0,.18); transform: translateY(-1px); filter: blur(0.2px) saturate(105%); }
+      .sendBtn:active { transform: translateY(0); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+      .sendBtn:disabled { opacity:.6; cursor: default; filter:none; box-shadow:none; transform:none; }
+
+      .plusBtn { width:40px; height:64px; border:1px dashed ${BRAND}; color:${BRAND}; background:#fff; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
+      .plusBtn:hover { background: #fff5f5; }
+
+      mark.chat-hl { background: #fef08a; padding: 0 2px; border-radius: 3px; }
+      .fileChip { display:inline-flex; align-items:center; gap:6px; border:1px solid #e5e7eb; border-radius:999px; padding:2px 8px; margin-top:6px; margin-right:6px; font-size:12px; }
+      .fileChip button { border:0; background:transparent; cursor:pointer; color:#6b7280; }
+    `}</style>
+  );
+
+  // зачистка старой dev-куки uid (если вдруг ставилась ранее)
+  useEffect(() => { document.cookie = "uid=; Max-Age=0; path=/"; }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -194,7 +250,7 @@ export default function ChatPage() {
         return;
       }
 
-      // ключ: подтверждаем id через сервер; если /api/auth/me недоступен — мягкий fallback на session.user.id
+      // подтверждаем id через сервер; если /api/auth/me недоступен — fallback на session.user.id
       const meSrv = await fetchMeFromServer();
       const uid = meSrv?.id ?? sessionUserId;
       if (cancelled) return;
@@ -240,7 +296,6 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!active) return;
-    if (justOpenedRef.current) return;
     const last = messages[messages.length - 1];
     const mine = last?.author?.id === meIdRef.current;
     if (mine || isNearBottom()) scrollToBottom("smooth");
@@ -283,9 +338,8 @@ export default function ChatPage() {
 
   async function loadMessages(threadId: string) {
     if (!meIdRef.current) return;
-    justOpenedRef.current = true;
     const r = await fetch(`/api/chat/threads/${threadId}/messages`, { cache: "no-store", headers: headers() }).catch(() => null);
-    if (!r?.ok) { justOpenedRef.current = false; return; }
+    if (!r?.ok) return;
     const data: Message[] = await r.json();
     setMessages(data);
 
@@ -298,10 +352,7 @@ export default function ChatPage() {
       setPeerReadAt(json.peerReadAt);
     }
 
-    setTimeout(() => {
-      jumpToBottomInstant();
-      setTimeout(() => { justOpenedRef.current = false; }, 50);
-    }, 0);
+    setTimeout(() => { jumpToBottomInstant(); }, 0);
   }
 
   async function preloadUsers() {
@@ -472,7 +523,7 @@ export default function ChatPage() {
 
   async function send() {
     if (!active || sending) return;
-    if (!meIdRef.current) return; // без подтверждённого id не отправляем
+    if (!meIdRef.current) return;
     const text = draft.trim(); if (!text) return;
 
     setSending(true);
@@ -531,8 +582,11 @@ export default function ChatPage() {
       {styles}
       <audio ref={audioRef} src="/pressing-a-button-with-sound.mp3" preload="auto" />
       <div className="chat-root">
+        {/* ЛЕВАЯ КОЛОНКА */}
         <aside className="threads">
-          <div style={{ padding: 12 }}>
+          {/* Поиск — glass */}
+          <div className="block glass">
+            <div className="blockTitle">Поиск</div>
             <div style={{ position: "relative" }}>
               <input
                 ref={searchRef}
@@ -540,7 +594,7 @@ export default function ChatPage() {
                 onChange={(e) => { setSearch(e.target.value); runSearch(e.target.value); }}
                 onFocus={() => { setOpenDd(true); placeDd(); }}
                 placeholder="Поиск сотрудника"
-                style={{ width: "100%", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 10, outline: "none" }}
+                style={{ width: "100%", padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 10, outline: "none", background:"#fff" }}
               />
               {openDd && ddPos.current && (
                 <div className="dd" style={{ left: ddPos.current.left, top: ddPos.current.top, width: ddPos.current.width }}>
@@ -554,9 +608,12 @@ export default function ChatPage() {
                 </div>
               )}
             </div>
+          </div>
 
-            <div style={{ marginTop: 10, fontWeight: 700 }}>Диалоги</div>
-            <div style={{ marginTop: 6 }}>
+          {/* Диалоги — glass */}
+          <div className="block glass">
+            <div className="blockTitle">Диалоги</div>
+            <div>
               {threads.map(t => {
                 const isActive = active?.id === t.id;
                 const unread = (t.unreadCount ?? 0) > 0;
@@ -565,8 +622,8 @@ export default function ChatPage() {
                 return (
                   <div key={t.id} style={{ position: "relative" }}>
                     <button className={cls} onClick={() => selectThread(t)}>
-                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-                        <div style={{ fontWeight: unread ? 700 : 600 }}>{t.peerName ?? t.peerId}</div>
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                        <div className="thread__name">{t.peerName ?? t.peerId}</div>
                         {t.lastMessageAt && <div style={{ color:"#6b7280", fontSize:11 }}>{fmt(t.lastMessageAt)}</div>}
                       </div>
                       {t.lastMessageText && (
@@ -577,7 +634,18 @@ export default function ChatPage() {
                       )}
                       {(t.unreadCount ?? 0) > 0 && <span className="badge">{t.unreadCount}</span>}
                     </button>
-                    <button className="btn-del" onClick={(e) => { e.stopPropagation(); removeThreadHard(t.id); }} title="Удалить диалог у обоих">×</button>
+
+                    {/* аккуратная кнопка удаления; не перекрывает badge */}
+                    <button
+                      className="btn-del"
+                      onClick={(e) => { e.stopPropagation(); removeThreadHard(t.id); }}
+                      title="Удалить диалог у обоих"
+                      aria-label="Удалить диалог"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
                   </div>
                 );
               })}
@@ -586,11 +654,12 @@ export default function ChatPage() {
           </div>
         </aside>
 
+        {/* ПРАВАЯ КОЛОНКА */}
         <section className="pane">
-          <div className="pane-header">
+          <div className="pane-header glass">
             <div className="pane-title">{active ? (active.peerName ?? active.peerId) : "Выберите собеседника"}</div>
 
-            {/* поиск по диалогу */}
+            {/* поиск по текущему диалогу */}
             <div className="pane-search" title="Поиск по диалогу">
               <input
                 value={q}
@@ -611,13 +680,14 @@ export default function ChatPage() {
             {peerTyping && <div className="pane-typing">печатает…</div>}
           </div>
 
-          <div className="pane-body" id="chat-scroll-area" ref={paneRef}>
+          <div className="pane-body glass" id="chat-scroll-area" ref={paneRef}>
             {!active && <div style={{ color:"#6b7280" }}>Нет сообщений</div>}
             {active && messages.map(m => {
               const mine = m.author?.id === meIdRef.current;
               const read = mine && peerReadAt ? Date.parse(peerReadAt) >= Date.parse(m.createdAt) : false;
               const ticks = mine ? (read ? "✓✓" : "✓") : "";
               const hasHit = q.trim() && (m.text || "").toLocaleLowerCase("ru-RU").includes(q.toLocaleLowerCase("ru-RU"));
+              const authorName = m.author?.name ?? m.author?.id ?? "—";
               return (
                 <div
                   key={m.id}
@@ -627,12 +697,11 @@ export default function ChatPage() {
                 >
                   <div className="msgCard">
                     <div className="msgHead">
-                      {!mine && <div>{m.author?.name ?? m.author?.id ?? "—"}</div>}
+                      <div className="msgAuthor">{authorName}</div>
+                      {/* дата у ВСЕХ — сразу после ФИО */}
                       <div className="msgMeta">{fmt(m.createdAt)}</div>
-                      {mine && <>
-                        <div className="msgMeta" style={{ marginLeft:4 }}>{ticks}</div>
-                        <div style={{ fontWeight:700 }}>{m.author?.name ?? m.author?.id ?? "—"}</div>
-                      </>}
+                      {/* галочки — только у моих, сразу после даты */}
+                      {mine && <div className="msgMeta" style={{ marginLeft:4 }}>{ticks}</div>}
                     </div>
                     <div className="msgText">{hl(m.text)}</div>
                     <div className="msgSep" />
@@ -653,21 +722,26 @@ export default function ChatPage() {
             <div ref={bottomRef} />
           </div>
 
-          <div className="pane-footer">
-            {/* плюсик — добавление файлов (UI) */}
+          <div className="pane-footer glass">
             <button className="plusBtn" onClick={() => fileInputRef.current?.click()} title="Добавить файлы">+</button>
-            <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => {
-              const list = Array.from(e.target.files || []);
-              setFiles(prev => [...prev, ...list]);
-              e.currentTarget.value = "";
-            }} />
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                const list = Array.from(e.target.files || []);
+                setFiles(prev => [...prev, ...list]);
+                e.currentTarget.value = "";
+              }}
+            />
             <div style={{ flex:1, display:"flex", flexDirection:"column" }}>
               <textarea
                 placeholder={active ? "Напишите сообщение…" : "Сначала выберите собеседника"}
                 value={draft}
                 onChange={e => { setDraft(e.target.value); pingTyping(); }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else pingTyping(); }}
-                style={{ flex:1, height:64, resize:"vertical", padding:"10px 12px", border:"1px solid #e5e7eb", borderRadius:10, outline:"none" }}
+                style={{ flex:1, height:64, resize:"vertical", padding:"10px 12px", border:"1px solid #e5e7eb", borderRadius:10, outline:"none", background:"#fff" }}
                 disabled={!active}
               />
               {!!files.length && (

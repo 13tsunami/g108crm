@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import ChatUnreadIndicator from "@/components/ChatUnreadIndicator";
 import ChatWrap from "@/components/ChatWrap";
 
 const BRAND = "#8d2828";
@@ -21,50 +20,127 @@ const ROLE_RU: Record<string, string> = {
 
 type ThreadListItem = { id: string; unreadCount?: number | null };
 
-function NavTile(props: { href: string; active: boolean; label: string; unread?: number | null }) {
-  const { href, active, label, unread } = props;
+type TaskLite = {
+  id: string;
+  assignedTo?: Array<{ type?: "user"; id: string }>;
+  assignees?: Array<{ userId: string; status?: string; doneAt?: string | null }>;
+  createdById?: string | null;
+  createdBy?: string | null;
+};
+
+function splitFio(full?: string | null) {
+  const s = (full || "").trim();
+  if (!s) return { last: "Гость", rest: "" };
+  const parts = s.split(/\s+/);
+  if (parts.length >= 2) {
+    return { last: (parts[0] || "").toUpperCase(), rest: parts.slice(1).join(" ") };
+  }
+  return { last: s.toUpperCase(), rest: "" };
+}
+
+function NavTile(props: {
+  href?: string;
+  active?: boolean;
+  label: string;
+  unread?: number | null;
+  onClick?: () => void;
+  asButton?: boolean;
+}) {
+  const { href, active, label, unread, onClick, asButton } = props;
   const hasUnread = typeof unread === "number" && unread > 0;
-  return (
-    <Link href={href} className="navlink" aria-current={active ? "true" : undefined}>
-      <div className={`tile ${active ? "active" : ""} ${hasUnread && !active ? "unread" : ""}`}>
-        <span className="label" title={label}>{label}</span>
-        {hasUnread ? (
-          <span className="badge" aria-label="Непрочитанные">
-            <ChatUnreadIndicator asText count={unread || 0} />
-          </span>
-        ) : null}
-      </div>
+
+  const content = (
+    <div
+      className={`tile glass ${active ? "active" : ""} ${hasUnread && !active ? "unread" : ""}`}
+      role="button"
+      aria-current={active ? "true" : undefined}
+    >
+      {/* lang="ru" + корректные переносы без разрывов слов */}
+      <span className="label" lang="ru" title={label}>{label}</span>
+
+      {hasUnread ? (
+        <span className="badge" aria-label="Счётчик">
+          {unread! > 99 ? "99+" : unread}
+        </span>
+      ) : null}
+
       <style jsx>{`
-        .navlink { display: block; text-decoration: none; }
         .tile {
           position: relative;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
+          display: grid;
+          place-items: center;
+          text-align: center;
           width: 100%;
-          padding: 10px 44px 10px 12px;
-          margin: 6px 0;
-          border-radius: 12px;
-          border: 1px solid #e5e7eb;
-          background: #fff;
-          transition: background 120ms ease, border-color 120ms ease;
+          aspect-ratio: 1 / 1;
+          border-radius: 16px;
+          border: 1px solid rgba(255,255,255,0.7);
+          transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+          cursor: pointer;
+          overflow: hidden;
+          padding: 6px; /* чуть больше воздуха — помогает тексту */
         }
-        .tile:hover { background: #f7fbff; border-color: #c7e3ff; }
-        .tile.active { background: #eef2ff; border-color: #c7e3ff; }
+        .glass {
+          background: rgba(255,255,255,0.55);
+          backdrop-filter: saturate(180%) blur(10px);
+          -webkit-backdrop-filter: saturate(180%) blur(10px);
+          box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+          border-color: rgba(229,231,235,0.8);
+        }
+        .tile:hover { transform: translateY(-1px); border-color: #c7e3ff; }
+        .tile.active { outline: 2px solid rgba(199,227,255,0.8); }
         .tile.unread::before {
           content: "";
-          position: absolute; left: -1px; top: -1px; bottom: -1px;
-          width: 4px; background: #ef9b28;
-          border-top-left-radius: 12px; border-bottom-left-radius: 12px;
+          position: absolute; left: 0; top: 0; height: 3px; width: 100%;
+          background: #ef9b28;
         }
-        .label { color: #111827; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        /* ✅ Две строки, без ломания слов; корректная русская расстановка переносов */
+        .label {
+          color: #111827;
+          font-size: 13px;
+          font-weight: 800;
+          line-height: 1.15;
+          max-width: 92%;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;       /* максимум две строки */
+          -webkit-box-orient: vertical;
+          white-space: normal;
+          overflow: hidden;
+
+          /* ключевые правки */
+          word-break: normal;          /* НЕ рвём слово посередине */
+          overflow-wrap: break-word;   /* переносим только при необходимости */
+          hyphens: auto;               /* корректные переносы слов */
+          -webkit-hyphens: auto;
+          text-wrap: balance;          /* красиво балансирует 2 строки, где поддерживается */
+        }
         .badge {
-          position: absolute; right: 12px; top: 8px;
+          position: absolute; right: 8px; top: 8px;
           font-size: 11px; line-height: 18px;
-          min-width: 24px; text-align: center;
+          min-width: 22px; text-align: center;
           padding: 0 6px; border-radius: 9999px;
-          background: ${BRAND}; color: #fff;
+          background: ${BRAND}; color: #fff; font-weight: 800;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.12);
         }
+      `}</style>
+    </div>
+  );
+
+  if (asButton) {
+    return (
+      <button onClick={onClick} className="tile-btn">
+        {content}
+        <style jsx>{`
+          .tile-btn { all: unset; display: block; }
+        `}</style>
+      </button>
+    );
+  }
+
+  return (
+    <Link href={href || "#"} className="navlink" aria-current={active ? "true" : undefined}>
+      {content}
+      <style jsx>{`
+        .navlink { display: block; text-decoration: none; }
       `}</style>
     </Link>
   );
@@ -77,9 +153,11 @@ export default function Sidebar() {
   const authed = Boolean(data?.user);
   const roleSlug = (data?.user as any)?.role as string | null;
   const roleRu = roleSlug ? (ROLE_RU[roleSlug] ?? roleSlug) : null;
-  const isPriv = roleSlug === "director" || roleSlug === "deputy_plus";
+
+  const hasAdminRights = ["admin", "director", "deputy_plus"].includes(roleSlug || "");
   const uid = useMemo(() => (data?.user as any)?.id as string | undefined, [data?.user]);
 
+  // --- ЧАТ: счётчик непрочитанных (как было) ---
   const [unreadTotal, setUnreadTotal] = useState<number>(0);
   async function refreshUnread() {
     if (!uid) return setUnreadTotal(0);
@@ -94,22 +172,84 @@ export default function Sidebar() {
       setUnreadTotal(total);
     } catch {}
   }
+
+  // --- ЗАДАЧИ: счётчик «назначенные мне» (как было) ---
+  const [tasksToMe, setTasksToMe] = useState<number>(0);
+
+  function assigneeIdsOf(t: TaskLite): string[] {
+    if (Array.isArray(t.assignedTo) && t.assignedTo.length) {
+      return t.assignedTo.filter(a => !a.type || a.type === "user").map(a => a.id).filter(Boolean);
+    }
+    if (Array.isArray(t.assignees) && t.assignees.length) {
+      return t.assignees.map(a => a.userId).filter(Boolean);
+    }
+    return [];
+  }
+  function myAssigneeStatus(t: TaskLite, myId?: string | null): string | null {
+    if (!myId) return null;
+    const rec = (t.assignees || []).find(a => a.userId === myId);
+    return rec?.status ?? null;
+  }
+
+  function tasksFromLocal(id: string) {
+    try {
+      const raw = localStorage.getItem(`tasks:u:${id}:toMeCount`);
+      const n = raw ? parseInt(raw, 10) : 0;
+      if (!Number.isNaN(n)) setTasksToMe(n);
+    } catch {}
+  }
+  async function tasksFromServer(id: string) {
+    try {
+      const r = await fetch("/api/tasks", { cache: "no-store" });
+      if (!r.ok) { tasksFromLocal(id); return; }
+      const list = (await r.json()) as TaskLite[];
+      const count = Array.isArray(list)
+        ? list.filter(t => assigneeIdsOf(t).includes(id) && myAssigneeStatus(t, id) !== "done").length
+        : 0;
+      setTasksToMe(count);
+      try {
+        localStorage.setItem(`tasks:u:${id}:toMeCount`, String(count));
+        window.dispatchEvent(new Event("g108:tasks-count-updated"));
+      } catch {}
+    } catch {
+      tasksFromLocal(id);
+    }
+  }
+
   useEffect(() => {
-    if (!authed) return;
+    if (!authed || !uid) return;
+
     refreshUnread();
+    tasksFromLocal(uid);
+    tasksFromServer(uid);
+
     const onThreadsUpdated = () => refreshUnread();
     const onSsePush = () => refreshUnread();
-    const onVis = () => { if (document.visibilityState === "visible") refreshUnread(); };
+    const onTasksUpdated = () => tasksFromLocal(uid);
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        refreshUnread();
+        tasksFromServer(uid);
+      }
+    };
+
     window.addEventListener("g108:chat-threads-updated", onThreadsUpdated as any);
     window.addEventListener("g108:sse-push", onSsePush as any);
+    window.addEventListener("g108:tasks-count-updated", onTasksUpdated as any);
     window.addEventListener("visibilitychange", onVis);
+
+    const iv = window.setInterval(() => tasksFromServer(uid), 15000);
+
     return () => {
       window.removeEventListener("g108:chat-threads-updated", onThreadsUpdated as any);
       window.removeEventListener("g108:sse-push", onSsePush as any);
+      window.removeEventListener("g108:tasks-count-updated", onTasksUpdated as any);
       window.removeEventListener("visibilitychange", onVis);
+      window.clearInterval(iv);
     };
   }, [authed, uid]);
 
+  // --- очистка базы (визуал прежний) ---
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [cleanMsg, setCleanMsg] = useState<string | null>(null);
@@ -134,52 +274,65 @@ export default function Sidebar() {
     }
   }
 
+  const fio = splitFio((data?.user?.name as string) || null);
+
   return (
     <aside className="wrap">
-      <div className="head">
-        <div className="who">
-          <div className="name" title={(data?.user?.name as string) || "Гость"}>
-            {(data?.user?.name as string) || "Гость"}
+      {/* Шапка — apple glass в бренде */}
+      <div className="head glass">
+        <div className="who" title={(data?.user?.name as string) || "Гость"}>
+          <div className="fio">
+            <div className="last">{fio.last}</div>
+            {fio.rest ? <div className="rest">{fio.rest}</div> : null}
           </div>
-
-          {/* НОВОЕ: роль + шестерёнка в одной строке; ⚙️ чуть больше */}
-          {authed && (
-            <div className="metaRow">
-              {roleRu && <div className="rolePill">{roleRu}</div>}
-             <Link href="/settings" title="Настройки профиля" className="settings" aria-label="Настройки профиля">
-  <span className="gear-icon" aria-hidden="true">
-    <svg viewBox="0 0 24 24" width="22" height="22">
-      <path fill="currentColor" d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm8.94-2.88-.96-.55c.04-.35.06-.7.06-1.07s-.02-.72-.06-1.07l.96-.55a.75.75 0 0 0 .27-1.02l-1-1.73a.75.75 0 0 0-.95-.32l-1.1.46a7.73 7.73 0 0 0-1.84-1.07l-.17-1.18a.75.75 0 0 0-.74-.64h-2a.75.75 0 0 0-.74.64l-.17 1.18c-.65.25-1.27.6-1.84 1.07l-1.1-.46a.75.75 0 0 0-.95.32l-1 1.73a.75.75 0 0 0 .27 1.02l.96.55c-.04.35-.06.7-.06 1.07s.02-.72.06-1.07l-.96-.55a.75.75 0 0 0-.27 1.02l1 1.73c.2.34.62.48.95.32l1.1-.46c.57.47 1.2.82 1.84 1.07l.17 1.18c.07.37.38.64.74.64h2c.36 0 .67-.27.74-.64l.17-1.18c.65-.25 1.27-.6 1.84-1.07l1.1.46c.33.16.75.02.95-.32l1-1.73a.75.75 0 0 0-.27-1.02Z" />
-    </svg>
-  </span>
-</Link>
-
-            </div>
-          )}
+          <div className="metaRow">
+            {roleRu && <div className="rolePill">{roleRu}</div>}
+            {authed && (
+              <Link href="/settings" title="Настройки профиля" className="settings" aria-label="Настройки профиля">
+                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                  <path fill={BRAND} d="M6 5h12a1 1 0 1 1 0 2H6a1 1 0 1 1 0-2Zm3 6h9a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2ZM4 17h16a1 1 0 1 1 0 2H4a1 1 0 1 1 0-2Z"/>
+                  <circle cx="8" cy="6" r="2" fill={BRAND} />
+                  <circle cx="14" cy="12" r="2" fill={BRAND} />
+                  <circle cx="10" cy="18" r="2" fill={BRAND} />
+                </svg>
+              </Link>
+            )}
+          </div>
         </div>
-        {/* Раньше иконка была здесь — убрано, чтобы не менять остальную верстку. */}
       </div>
 
+      {/* Основная навигация — 2×N стеклянные плитки */}
       <nav className="nav">
         {authed && (
           <>
-            {isPriv && <NavTile href="/admin/groups" active={pathname === "/admin/groups"} label="Кафедры и группы" />}
+            <div className="navGrid">
+              <NavTile href="/dashboard"     active={pathname === "/dashboard"}     label="Основное" />
+              <NavTile href="/chat"          active={pathname === "/chat"}          label="Чаты" unread={pathname !== "/chat" ? unreadTotal : 0} />
+              <NavTile href="/inboxTasks"    active={pathname === "/inboxTasks"}    label="Задачи" unread={pathname !== "/inboxTasks" ? tasksToMe : 0} />
+              <NavTile href="/calendar"      active={pathname === "/calendar"}      label="Календарь" />
+              <NavTile href="/schedule"      active={pathname === "/schedule"}      label="Расписание" />
+              <NavTile href="/teachers"      active={pathname === "/teachers"}      label="Педагоги" />
+              <NavTile href="/discussions"   active={pathname === "/discussions"}   label="Тренды" />
+              <NavTile href="/archive_tasks" active={pathname === "/archive_tasks"} label="Архив задач" />
+            </div>
 
-            <NavTile href="/dashboard"    active={pathname === "/dashboard"}    label="Основное" />
-            <NavTile href="/chat"         active={pathname === "/chat"}         label="Чаты" unread={pathname !== "/chat" ? unreadTotal : 0} />
-            <NavTile href="/inboxTasks"   active={pathname === "/inboxTasks"}   label="Задачи" />
-            <NavTile href="/calendar"     active={pathname === "/calendar"}     label="Календарь" />
-            <NavTile href="/schedule"     active={pathname === "/schedule"}     label="Расписание" />
-            <NavTile href="/changes"      active={pathname === "/changes"}      label="Изменения в расписании" />
-            <NavTile href="/teachers"     active={pathname === "/teachers"}     label="Педагоги" />
+            {hasAdminRights && (
+              <>
+                <div className="adminHeader">Администрирование</div>
+                <div className="navGrid">
+                  <NavTile href="/admin/groups" active={pathname === "/admin/groups"} label="Кафедры и группы" />
+                  <NavTile asButton onClick={() => setConfirmOpen(true)} label="Очистка базы" />
+                </div>
+              </>
+            )}
           </>
         )}
       </nav>
 
+      {/* Низ */}
       <div className="foot">
-        {isPriv && (
+        {hasAdminRights && (
           <>
-            <button className="btn danger" onClick={() => setConfirmOpen(true)}>Окончательное удаление</button>
             {cleanMsg && <div className="note">{cleanMsg}</div>}
             {cleanErr && <div className="error">{cleanErr}</div>}
           </>
@@ -191,6 +344,7 @@ export default function Sidebar() {
         )}
       </div>
 
+      {/* Модалка подтверждения очистки */}
       {confirmOpen && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={() => !cleaning && setConfirmOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
@@ -201,7 +355,7 @@ export default function Sidebar() {
             </p>
             <div className="modal-actions">
               <button className="btn" onClick={() => setConfirmOpen(false)} disabled={cleaning}>Отмена</button>
-              <button className="btn danger" onClick={runPurge} disabled={cleaning}>
+              <button className="btn primary" onClick={runPurge} disabled={cleaning}>
                 {cleaning ? "Удаление…" : "Удалить окончательно"}
               </button>
             </div>
@@ -212,25 +366,63 @@ export default function Sidebar() {
       <ChatWrap />
 
       <style jsx>{`
-        .wrap { display: grid; grid-template-rows: auto 1fr auto; height: 100%; background:#fff; border-right:1px solid #e5e7eb; font-size:14px; }
-        .head { display:flex; align-items:center; justify-content:space-between; min-height:64px; padding:12px; border-bottom:1px solid #e5e7eb; }
-        .who { min-width:0; }
-        .name { font-weight:800; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .metaRow { display:flex; align-items:center; gap:8px; margin-top:4px; }
-        .rolePill { display:inline-block; font-size:12px; color:#374151; padding:2px 8px; border:1px solid #e5e7eb; border-radius:9999px; background:#fafafa; }
-        .settings { display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:9999px; }
-        .settings:hover { background: rgba(236, 240, 20, 1); }
-        .gear-icon { display:inline-flex; transform: scale(1.5); transform-origin: center; }
+        .wrap {
+          display: grid; grid-template-rows: auto 1fr auto;
+          height: 100%; background:#fff; border-right:1px solid #e5e7eb; font-size:14px;
+        }
+        .head {
+          display:flex; align-items:center; min-height:86px; padding:12px;
+          border-bottom: 1px solid rgba(229,231,235,0.8);
+          position: relative;
+        }
+        .head::after {
+          content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+          background: ${BRAND}; opacity: .12;
+        }
+        .glass {
+          background: rgba(255,255,255,0.55);
+          backdrop-filter: saturate(180%) blur(10px);
+          -webkit-backdrop-filter: saturate(180%) blur(10px);
+        }
 
-        .nav { padding:10px; }
+        .who { min-width:0; display: grid; gap: 6px; width: 100%; }
+        .fio { line-height: 1.1; }
+        .last {
+          font-weight: 900; font-size: 18px; letter-spacing: .4px;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .rest { font-weight: 700; font-size: 14px; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .metaRow { display:flex; align-items:center; gap:8px; justify-content: space-between; }
+        .rolePill {
+          display:inline-block; font-size:12px; color:#374151; padding:2px 8px;
+          border:1px solid rgba(229,231,235,0.9); border-radius:9999px; background: rgba(255,255,255,0.6);
+          backdrop-filter: saturate(180%) blur(8px);
+        }
+        .settings {
+          display:inline-flex; align-items:center; justify-content:center;
+          width:36px; height:36px; border-radius:12px;
+          background: rgba(255,255,255,0.6);
+          border: 1px solid rgba(229,231,235,0.9);
+          backdrop-filter: saturate(180%) blur(8px);
+        }
+        .settings:hover { background: rgba(255,255,255,0.9); }
+
+        .nav { padding:12px; }
+        .navGrid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+        .adminHeader {
+          margin: 12px 4px 8px; font-size: 12px; color: #6b7280; font-weight: 700; text-transform: uppercase;
+          letter-spacing: .06em;
+        }
 
         .foot { padding:12px; border-top:1px solid #e5e7eb; display:grid; gap:8px; }
-        .btn { height:36px; border:1px solid #e5e7eb; background:#fff; border-radius:10px; display:flex; align-items:center; justify-content:center; }
+        .btn { height:36px; border:1px solid #e5e7eb; background:#fff; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor: pointer; }
         .btn:hover { background:#f9fafb; }
         .primary { background:${BRAND}; color:#fff; border-color:${BRAND}; }
         .primary:hover { filter: brightness(0.96); }
-        .danger { border-color:#ef4444; background:#ef4444; color:#fff; }
-        .danger:hover { filter: brightness(0.98); }
         .note { font-size:12px; color:#16a34a; }
         .error { font-size:12px; color:#ef4444; }
 
