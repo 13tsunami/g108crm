@@ -49,14 +49,22 @@ function NavTile(props: {
   const { href, active, label, unread, onClick, asButton } = props;
   const hasUnread = typeof unread === "number" && unread > 0;
 
+  // 👉 длинное одиночное слово — уменьшаем шрифт и запрещаем переносы
+  const isSingleLongWord = !/\s/.test(label) && label.length >= 9;
+
   const content = (
     <div
       className={`tile glass ${active ? "active" : ""} ${hasUnread && !active ? "unread" : ""}`}
       role="button"
       aria-current={active ? "true" : undefined}
     >
-      {/* lang="ru" + корректные переносы без разрывов слов */}
-      <span className="label" lang="ru" title={label}>{label}</span>
+      <span
+        className={`label ${isSingleLongWord ? "label--single" : "label--multi"}`}
+        lang="ru"
+        title={label}
+      >
+        {label}
+      </span>
 
       {hasUnread ? (
         <span className="badge" aria-label="Счётчик">
@@ -77,7 +85,7 @@ function NavTile(props: {
           transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
           cursor: pointer;
           overflow: hidden;
-          padding: 6px; /* чуть больше воздуха — помогает тексту */
+          padding: 6px;
         }
         .glass {
           background: rgba(255,255,255,0.55);
@@ -93,26 +101,41 @@ function NavTile(props: {
           position: absolute; left: 0; top: 0; height: 3px; width: 100%;
           background: #ef9b28;
         }
-        /* ✅ Две строки, без ломания слов; корректная русская расстановка переносов */
+
+        /* БАЗА для текста */
         .label {
           color: #111827;
-          font-size: 13px;
           font-weight: 800;
           line-height: 1.15;
-          max-width: 92%;
-          display: -webkit-box;
-          -webkit-line-clamp: 2;       /* максимум две строки */
-          -webkit-box-orient: vertical;
+          max-width: 100%;           /* + шире поле под слово */
           white-space: normal;
           overflow: hidden;
-
-          /* ключевые правки */
-          word-break: normal;          /* НЕ рвём слово посередине */
-          overflow-wrap: break-word;   /* переносим только при необходимости */
-          hyphens: auto;               /* корректные переносы слов */
-          -webkit-hyphens: auto;
-          text-wrap: balance;          /* красиво балансирует 2 строки, где поддерживается */
+          text-align: center;
         }
+
+        /* Многословные подписи — до 2 строк, аккуратные переносы */
+        .label--multi {
+          font-size: 13px;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          word-break: normal;
+          overflow-wrap: break-word; /* переносим только между словами */
+          hyphens: auto;
+          -webkit-hyphens: auto;
+          text-wrap: balance;
+        }
+
+        /* Одно длинное слово — не рвём, чуть ужимаем и уменьшаем шрифт */
+        .label--single {
+          font-size: 12px;           /* -1px даёт нужный запас */
+          word-break: keep-all;      /* запрещаем разрывы внутри слова */
+          overflow-wrap: normal;
+          hyphens: manual;           /* отключаем авто-переносы */
+          font-stretch: 95%;         /* аккуратно «утягивает» по ширине где поддерживается */
+          letter-spacing: 0.02em;    /* визуально сбалансировать */
+        }
+
         .badge {
           position: absolute; right: 8px; top: 8px;
           font-size: 11px; line-height: 18px;
@@ -154,10 +177,11 @@ export default function Sidebar() {
   const roleSlug = (data?.user as any)?.role as string | null;
   const roleRu = roleSlug ? (ROLE_RU[roleSlug] ?? roleSlug) : null;
 
+  // 👇 права: директор и deputy_plus тоже видят админ-ряд
   const hasAdminRights = ["admin", "director", "deputy_plus"].includes(roleSlug || "");
   const uid = useMemo(() => (data?.user as any)?.id as string | undefined, [data?.user]);
 
-  // --- ЧАТ: счётчик непрочитанных (как было) ---
+  // --- ЧАТ: счётчик ---
   const [unreadTotal, setUnreadTotal] = useState<number>(0);
   async function refreshUnread() {
     if (!uid) return setUnreadTotal(0);
@@ -173,7 +197,7 @@ export default function Sidebar() {
     } catch {}
   }
 
-  // --- ЗАДАЧИ: счётчик «назначенные мне» (как было) ---
+  // --- ЗАДАЧИ: счётчик «назначенные мне» ---
   const [tasksToMe, setTasksToMe] = useState<number>(0);
 
   function assigneeIdsOf(t: TaskLite): string[] {
@@ -316,7 +340,7 @@ export default function Sidebar() {
               <NavTile href="/archive_tasks" active={pathname === "/archive_tasks"} label="Архив задач" />
             </div>
 
-            {hasAdminRights && (
+            {["admin", "director", "deputy_plus"].includes((data?.user as any)?.role || "") && (
               <>
                 <div className="adminHeader">Администрирование</div>
                 <div className="navGrid">
@@ -331,7 +355,7 @@ export default function Sidebar() {
 
       {/* Низ */}
       <div className="foot">
-        {hasAdminRights && (
+        {["admin", "director", "deputy_plus"].includes((data?.user as any)?.role || "") && (
           <>
             {cleanMsg && <div className="note">{cleanMsg}</div>}
             {cleanErr && <div className="error">{cleanErr}</div>}

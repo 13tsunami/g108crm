@@ -9,7 +9,8 @@
       "createdAt": "2025-08-13T13:10:12.115Z",
       "attachments": [],
       "votes": {
-        "cme6zvelp0002v3q07utu9jrz": 1
+        "cme6zvelp0002v3q07utu9jrz": 1,
+        "cme6zvem80005v3q0x7mnyycb": 1
       },
       "comments": [
         {
@@ -19,6 +20,15 @@
           "authorName": "Фартушный Владислав Сергеевич",
           "text": "Ну такое",
           "createdAt": "2025-08-13T13:14:23.603Z",
+          "votes": {}
+        },
+        {
+          "id": "de4d1bd8-7648-40c2-ba44-c7d85115a1ef",
+          "postId": "1dc5178d-f589-4ba3-8102-301150eeee42",
+          "authorId": "cme6zvem80005v3q0x7mnyycb",
+          "authorName": "Евжик Иван Сергеевич",
+          "text": "Какое \"такое\"?",
+          "createdAt": "2025-08-13T14:31:09.674Z",
           "votes": {}
         }
       ]
